@@ -1,0 +1,14 @@
+goal-execute.rhai
+  h_6000354274ce50 7,30,37-42,48,52-53,151-179,226-252,325-329,338-339,362-372,376-377,379,383,390,395-408,413-415,423-435,508-512
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4f42f31fed82f8332ba16254e4027c56adb87b1d",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
