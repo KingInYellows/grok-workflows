@@ -1,7 +1,7 @@
 let meta = #{
     name: "goal-planning",
     description: "One-shot meta-planner: ideate through adversarial finalize, then write exactly two docs/goals files for the next long-horizon goal",
-    when_to_use: "Plan the next long-running goal for a git root. /goal-planning. Not a /goal or /loop.",
+    when_to_use: "Plan the next long-running goal for a git root. /goal-planning. Not a /goal or /loop. Implementation is /goal-execute.",
     phases: [
         #{ title: "Ideation", detail: "git root, branch, dirty state, live heat" },
         #{ title: "Brainstorm", detail: "candidate goals from merge, week, and plan lenses" },
@@ -9,7 +9,7 @@ let meta = #{
         #{ title: "Validate", detail: "file-backed done-when commands and evidence paths" },
         #{ title: "Synthesize", detail: "one primary goal and two rejected alternatives" },
         #{ title: "Adversarial", detail: "skeptics refute horizon, done-when package, callee contract, and terminal state" },
-        #{ title: "Finalize", detail: "lock slug, docs, and companion name" },
+        #{ title: "Finalize", detail: "lock slug, docs, and the goal-execute companion" },
         #{ title: "Output", detail: "write two docs/goals files, verify, pause if write is denied" },
     ],
 };
@@ -175,6 +175,11 @@ fn trimmed(s) {
     }
 }
 
+fn map_str(m, key) {
+    if m == () || type_of(m) != "map" { return ""; }
+    trimmed(m[key])
+}
+
 fn as_array(x) {
     if type_of(x) == "array" { return x; }
     []
@@ -231,6 +236,55 @@ fn contains_str(hay, needle) {
     false
 }
 
+fn index_of_from(hay, needle, start) {
+    if type_of(hay) != "string" || type_of(needle) != "string" { return -1; }
+    let nlen = needle.len();
+    let hlen = hay.len();
+    if nlen == 0 || hlen < nlen { return -1; }
+    let i = start;
+    if i < 0 { i = 0; }
+    while i + nlen <= hlen {
+        if hay.sub_string(i, nlen) == needle { return i; }
+        i += 1;
+    }
+    -1
+}
+
+fn drop_fence_containing(text, marker) {
+    if type_of(text) != "string" { return ""; }
+    if contains_str(text, marker) != true { return text; }
+    let s = text;
+    let guard = 0;
+    let fence = "```";
+    while contains_str(s, marker) && guard < 4 {
+        let at = index_of_from(s, marker, 0);
+        if at < 0 { return s; }
+        let open = -1;
+        let j = at;
+        while j >= 0 {
+            if j + fence.len() <= s.len() && s.sub_string(j, fence.len()) == fence {
+                open = j;
+                break;
+            }
+            j -= 1;
+        }
+        if open < 0 { return s; }
+        let close = index_of_from(s, fence, open + fence.len());
+        if close < 0 { return s; }
+        let end = close + fence.len();
+        if end < s.len() && s.sub_string(end, 1) == "\n" { end += 1; }
+        let left = "";
+        if open > 0 { left = s.sub_string(0, open); }
+        let right = "";
+        if end < s.len() { right = s.sub_string(end, s.len() - end); }
+        let next = left + right;
+        if next == s { return s; }
+        s = next;
+        guard += 1;
+    }
+    s
+}
+
 fn docs_goals_rel_ok(rel) {
     let p = trimmed(rel);
     let prefix = "docs/goals/";
@@ -284,9 +338,12 @@ fn done_when_block() {
     s += "A name or substring ban is a scope fence. It does not prove two callers share one production row. ";
     s += "When the outcome is one shared record, row, or store, done-when must assert the required arguments of that write. A test double that drops those arguments must fail the test. ";
     s += "If the package has .venv/bin, the command sets PATH=\".venv/bin:$PATH\" and uses that interpreter. Bare python is not assumed to be on PATH. ";
-    s += "A combined log uses a brace group, { cmd1 && cmd2; } > log 2>&1. The form A && B > log captures only B. ";
-    s += "Each gate log starts with the line from git rev-parse HEAD. ";
-    s += "Run the full default suite once per commit that changes product code. Later checks rerun only the narrow gates unless HEAD changed. ";
+    s += "Name the product command once. A second copy of that command is not a second proof. ";
+    s += "A rehearsal of the product command before the commit is not the acceptance log. ";
+    s += "Commit locally, then run one acceptance brace group. The form A && B > log captures only B. Use a brace group whose first command prints HEAD and the output of git rev-parse HEAD, then the product command once, then the full suite when the commit changes product code. ";
+    s += "The acceptance log's first line must equal git rev-parse HEAD after that commit, and the group must exit 0, before the acceptance box is checked. ";
+    s += "Run the full default suite once, inside that post-commit group, when the commit changes product code. ";
+    s += "If HEAD moves again, rerun only the narrow gates. Do not rebuild an image whose Dockerfile and source are unchanged in the commit. Record the docker image inspect ID instead. ";
     s += "If the repo has a test that forbids one package importing another, and in-scope files cross that boundary, name that test and run it before the full suite. ";
     s += "The quote is the recipe or the exact command line. A target: ## comment is not a quote. ";
     s
@@ -294,13 +351,7 @@ fn done_when_block() {
 
 fn companion_name_for(slug) {
     if non_empty(slug) != true { return ""; }
-    let base = "goal-" + slug;
-    if base == "repo-map" { return base + "-exec"; }
-    if base == "workspace-map" { return base + "-exec"; }
-    if base == "host-map" { return base + "-exec"; }
-    if base == "tech-debt-scan" { return base + "-exec"; }
-    if base == "goal-planning" { return base + "-exec"; }
-    base
+    "goal-execute"
 }
 
 fn restore_goal_rel(as_of, slug) {
@@ -523,6 +574,12 @@ fn self_check() {
     if contains_str(map_str(long_w, "tail"), "TAILMARK") != true { return "witness tail"; }
     if contains_str(map_str(long_w, "head"), "TAILMARK") { return "witness overlapped"; }
     if map_str(body_witness_parts(""), "head") != "" { return "empty witness"; }
+    let fenced = "keep\n```\n/create-workflow name\n```\nCompanion: goal-execute\n";
+    let stripped = drop_fence_containing(fenced, "/create-workflow");
+    if contains_str(stripped, "/create-workflow") { return "fence kept"; }
+    if contains_str(stripped, "Companion: goal-execute") != true { return "companion dropped"; }
+    if starts_with(stripped, "keep") != true { return "prefix dropped"; }
+    if drop_fence_containing("plain", "/create-workflow") != "plain" { return "plain mutated"; }
     ""
 }
 
@@ -1002,7 +1059,7 @@ let pack = json_encode(#{
 });
 let skeptics = [
     "Attack horizon fit. If slug is empty, pick the best week-horizon candidate via replacement_slug. Set too_short=true if the primary is a same-day copy tweak while stacked PRs, dirty mixed trees, or a product loop exist. Set real=true only if you re-opened files that support keeping this pick. Do not treat a planner stub or previous GOAL_NEXT as the pick. Leave callee_contract empty. Set terminal to an empty string. Implementation starts from trunk (main or master, whichever ref exists), not the checked-out branch. For every claim that a write already passes its required arguments, open the trunk copy with git show <trunk>:path. premise_on_trunk is about the synthesized contract, not about whether the outcome is finished. Set premise_on_trunk false only when the goal's claimed write arguments or callee behavior contradict the trunk source you opened with git show <trunk>:path. Set premise_on_trunk true when that contract matches the trunk source. Leave premise_on_trunk unset when the only finding is that the desired outcome is not finished yet. Trunk is origin/main or origin/master when that ref exists. Do not judge refs/heads/main when it is behind that remote. If git show cannot run, leave premise_on_trunk unset. A missing or denied shell is not a successful trunk check. Do not search for another executor.",
-    "Attack done-when and evidence. A runner counts when you opened the quoted line and it is a real command in the changing package's AGENTS.md, Makefile, package.json, or scripts/verify.sh, or in the repo-root copy of those files when the quote says how to test that package. Set real=false if the command is UNKNOWN, invented, or the quote does not match the opened line. Set real=false if the runner does not execute or read the file the outcome changes. Set real=false if the outcome's new assertion is already true on trunk. If done_when_command is EVIDENCE, set real=true only when you opened done_when_source, the quote is present, and that checklist item is still open on trunk. Set real=false when the quote is missing or the box is already checked. Do not reject EVIDENCE only because the suite never opens a live row. Set real=true when the runner quote matches, the runner reaches the file the outcome changes, and you opened a current file showing that assertion is still false. A suite that stays green today is the runner, not proof the outcome already holds. Do not set real=false only because the new assertion is absent. A command in this git root does not prove a sibling-repo change. A substring or name ban is a fence. If the outcome is one shared record, row, or store, set real=false unless done-when asserts the write's required arguments and a test double that drops them would fail. Put those argument names in callee_contract. If you cannot find them, set callee_contract to UNKNOWN plus the file to open. Do not set too_short for a wrong package. too_short is only for a horizon that is too small. If slug is empty, set real=false and name a candidate replacement_slug that has a file-backed runner. Set terminal to an empty string.",
+    "Attack done-when and evidence. A runner counts when you opened the quoted line and it is a real command in the changing package's AGENTS.md, Makefile, package.json, or scripts/verify.sh, or in the repo-root copy of those files when the quote says how to test that package. Set real=false if the command is UNKNOWN, invented, or the quote does not match the opened line. Set real=false if the runner does not execute or read the file the outcome changes. Set real=false if the outcome's new assertion is already true on trunk. If done_when_command is EVIDENCE, set real=true only when you opened done_when_source, the quote is present, and that checklist item is still open on trunk. Set real=false when the quote is missing or the box is already checked. Do not reject EVIDENCE only because the suite never opens a live row. Set real=true when the runner quote matches, the runner reaches the file the outcome changes, and you opened a current file showing that assertion is still false. A suite that stays green today is the runner, not proof the outcome already holds. Do not set real=false only because the new assertion is absent. A command in this git root does not prove a sibling-repo change. A substring or name ban is a fence. If the outcome is one shared record, row, or store, set real=false unless done-when asserts the write's required arguments and a test double that drops them would fail. Put those argument names in callee_contract. If you cannot find them, set callee_contract to UNKNOWN plus the file to open. Do not set too_short for a wrong package. too_short is only for a horizon that is too small. If slug is empty, set real=false and name a candidate replacement_slug that has a file-backed runner. Do not set real=false only because acceptance is one post-commit brace group. A rehearsal before the commit is not that log. One product command is enough. Set terminal to an empty string.",
     "Attack callee contract and terminal state. If in_scope pins, launches, or speaks a protocol to another program, open that program's source and set real=true only when callee_contract quotes its deadlines, the env it reads, and the argv flags whose absence changes a hash. A fast fake success does not prove a deadline or a child env. If you cannot open the callee, set real=false and callee_contract to UNKNOWN plus the path you tried. If the outcome is one shared record, row, or store, callee_contract must name the required write arguments even when no external program is launched. Do not clear those names. If nothing is pinned, launched, or a shared write, set real=true, callee_contract to empty, and say so in reason. If the outcome both forbids gt submit and requires a PR number to archive or close, set real=false and terminal to leave-shell. If archival requires the number a submit command prints, set terminal to submit-then-archive. On horizon=week, when no PR number is required, set terminal to local-commit. On horizon=merge, when no PR number is required, set terminal to no-submit. Set too_short=false.",
 ];
 let ajobs = [];
@@ -1141,11 +1198,11 @@ fin_prompt += "If terminal_notes contain no-submit and do not contain local-comm
 fin_prompt += "Do not write 'do not gt submit' in the summary lines, Outcome, Invariant, In scope, Out of scope, Done when, or the companion block. ";
 fin_prompt += "Planner hard forbids (no commit/push during THIS workflow) must NOT be copied into the /goal implement prompt. The /goal MAY edit and commit locally. It must say: do not /loop, do not gh merge, do not expand scope. ";
 fin_prompt += "If the change pins, launches, or speaks a protocol to another program, or callee_notes name required write arguments, goal_md must include a Callee contract section. Copy deadlines, env vars, argv flags, and required write arguments from callee_notes. If a note is UNKNOWN, write UNKNOWN and name the file the implementer must open. A fast fake success does not prove a deadline, a child env, or a dropped keyword argument. Omit Callee contract only when no note names a callee or a required write argument. ";
-fin_prompt += "goal_md sections, in order: Title; '## As-of (not acceptance)' with root, branch, HEAD, and dirty yes/no inside a fence; Why this goal now (3-6 lines plus evidence paths); '## Invariant' (one sentence, the production row or behavior, including required write arguments when the goal is one shared record); In scope; Out of scope; Callee contract when required; Done when (product command in the changing package, good output, scope-fence command, venv PATH, brace-group log, HEAD as the first log line, full suite once per product commit); '## Terminal'; Rollback; Budget hint; Rejected alternatives (exactly 2). ";
+fin_prompt += "goal_md sections, in order: Title; '## As-of (not acceptance)' with root, branch, HEAD, and dirty yes/no inside a fence; Why this goal now (3-6 lines plus evidence paths); '## Invariant' (one sentence, the production row or behavior, including required write arguments when the goal is one shared record); In scope; Out of scope; Callee contract when required; Done when (one product command in the changing package, good output, scope-fence command, venv PATH, rehearsal before commit is not acceptance, one post-commit brace group whose first line is HEAD plus git rev-parse HEAD, full suite once inside that group when product code changed, no second image rebuild when the Dockerfile and source are unchanged); '## Terminal'; Rollback; Budget hint; Rejected alternatives (exactly 2). ";
 fin_prompt += "The as-of fence is not acceptance. Later steps must not treat that branch or HEAD as the current tree. ";
-fin_prompt += "Budget hint: /goal implements. The companion re-runs the done-when commands against HEAD. It does not remap the pre-change call sites as the current tree. A finding counts only when the quoted line is still in HEAD. A plan box is [x] only when the gate log's HEAD line equals git rev-parse HEAD. After compaction, the next step is the first unchecked box, or a narrow re-run when HEAD moved. ";
-fin_prompt += "next_md: exactly 8 summary lines that do not treat the as-of branch as the spec; a fenced block that starts with /goal and includes the invariant, the product done-when command, the callee-contract constants or UNKNOWN, the one Terminal line, out-of-scope, the HEAD-quote rule, the checkbox rule, the suite-once rule, and 'do not /loop, do not gh merge, do not expand scope'; a second fenced block of companion /create-workflow TEXT (do not invoke it). The companion verifies HEAD and discards a finding whose quote is absent from HEAD. It does not map the pre-change tree as current. When a callee or required write arguments exist, it opens that source before implement. ";
-fin_prompt += "Companion name must be goal-<slug>, suffix -exec if it equals repo-map, workspace-map, host-map, tech-debt-scan, or goal-planning. ";
+fin_prompt += "Budget hint: /goal-execute implements and runs the acceptance gate after the local commit. It does not remap the pre-change call sites as the current tree. A finding counts only when the quoted line is still in HEAD. Progress boxes may be checked when that step's artifact exists. The acceptance box is [x] only when the post-commit gate log's first line equals git rev-parse HEAD and the group exited 0. After compaction, the next step is the first unchecked box, or a narrow re-run when HEAD moved again. Do not rebuild an image whose Dockerfile and source are unchanged. Record the docker image inspect ID. ";
+fin_prompt += "next_md: exactly 8 summary lines that do not treat the as-of branch as the spec; one fenced block that starts with /goal and includes the invariant, the single product done-when command, the post-commit acceptance rule, the callee-contract constants or UNKNOWN, the one Terminal line, out-of-scope, the HEAD-quote rule, the acceptance-box rule, the suite-once rule, and 'do not /loop, do not gh merge, do not expand scope'. Do not include a /create-workflow fence or a per-slug companion script. End with the line 'Companion: goal-execute'. The companion verifies HEAD and discards a finding whose quote is absent from HEAD. It does not map the pre-change tree as current. When a callee or required write arguments exist, it opens that source before implement. ";
+fin_prompt += "companion_name must be goal-execute. ";
 fin_prompt += "/goal fenced block max " + MAX_GOAL_WORDS.to_string() + " words. Keep it short. When a callee exists, keep the quoted constants inside that cap and cut narrative first. ";
 fin_prompt += "Both goal_md and next_md must contain the slug as plain text. ";
 if as_of == "" {
@@ -1190,7 +1247,6 @@ if as_of == "" {
 if fin != () && fin.success == true && fin.output != () {
     if fin.output.slug != () { slug = trimmed(fin.output.slug); }
     if non_empty(slug) {
-        if non_empty(fin.output.companion_name) { companion = trimmed(fin.output.companion_name); }
         if non_empty(fin.output.goal_md) { goal_md = trimmed(fin.output.goal_md); }
         if non_empty(fin.output.next_md) { next_md = trimmed(fin.output.next_md); }
         if non_empty(fin.output.goal_rel) { goal_rel = trimmed(fin.output.goal_rel); }
@@ -1226,10 +1282,6 @@ if non_empty(goal_md) {
         log("Finalize goal_md missing Terminal");
     }
 }
-if companion == "goal-planning" || companion == "repo-map" || companion == "workspace-map" || companion == "host-map" || companion == "tech-debt-scan" {
-    companion = companion + "-exec";
-}
-
 if non_empty(slug) != true {
     companion = "";
     goal_rel = "";
@@ -1239,7 +1291,20 @@ if non_empty(slug) != true {
     skip_output = true;
     log("Empty slug; not writing goals");
 } else {
-    if companion == "" || companion == "goal-" { companion = companion_name_for(slug); }
+    companion = "goal-execute";
+    let stripped_next = drop_fence_containing(next_md, "/create-workflow");
+    if stripped_next != next_md {
+        log("Dropped /create-workflow fence from next_md");
+        next_md = stripped_next;
+    }
+    let stripped_goal = drop_fence_containing(goal_md, "/create-workflow");
+    if stripped_goal != goal_md {
+        log("Dropped /create-workflow fence from goal_md");
+        goal_md = stripped_goal;
+    }
+    if contains_str(next_md, "/create-workflow") || contains_str(goal_md, "/create-workflow") {
+        log("Finalize body still names /create-workflow outside a fence; output must drop it");
+    }
     if as_of == "" && looks_dated_goal(goal_rel) {
         log("Finalize invented a date while as_of is empty; using dateless path");
         goal_rel = restore_goal_rel("", slug);
@@ -1282,6 +1347,7 @@ out_prompt += "Git root: " + git_root + "\n";
 out_prompt += "File 1 relative path: " + goal_rel + "\n";
 out_prompt += "File 2 relative path: " + next_rel + "\n";
 out_prompt += "Write the goal_md body to file 1 and next_md body to file 2. Do not wrap in extra commentary. ";
+out_prompt += "If either body contains a /create-workflow fence or a per-slug companion script, delete that fence before writing. The companion line is exactly: Companion: goal-execute. ";
 out_prompt += "If a path is outside docs/goals/, refuse that write. ";
 out_prompt += "Bodies JSON:\n" + json_encode(#{ goal_md: goal_md, next_md: next_md, companion: companion }) + "\n";
 out_prompt += "Return wrote_goal, wrote_next, goal_path, next_path, extra_writes (must be empty).";
