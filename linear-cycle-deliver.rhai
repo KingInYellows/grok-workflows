@@ -805,7 +805,7 @@ fn self_check() {
         #{ plans: [#{
             identifier: "HI",
             test_file: "shared/src/types/dto-contracts.test.ts",
-            test_command: "pnpm --filter @medianest/shared exec vitest run src/types/dto-contracts.test.ts",
+            test_command: "pnpm --filter @example/shared exec vitest run src/types/dto-contracts.test.ts",
             production_files: ["backend/src/x.ts"],
             summary: "add the contract",
         }] }

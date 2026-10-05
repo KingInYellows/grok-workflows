@@ -1181,9 +1181,9 @@ fn self_check() {
     );
     if labels.rows.len() != 1 { return "label keep"; }
     if labels.dropped.len() != 1 { return "label drop"; }
-    if !label_grounded("Create unprivileged Debian/Ubuntu LXC on Proxmox (2-4 vCPU, 2-4GB RAM).", "proxmox") { return "label case"; }
-    if !label_grounded("Proxmox hosts the guest", "proxmox") { return "label start"; }
-    if !label_grounded("runs on Proxmox", "proxmox") { return "label end"; }
+    if !label_grounded("Create unprivileged Debian/Ubuntu LXC on Backend (2-4 vCPU, 2-4GB RAM).", "backend") { return "label case"; }
+    if !label_grounded("Backend hosts the guest", "backend") { return "label start"; }
+    if !label_grounded("runs on Backend", "backend") { return "label end"; }
     if label_grounded("the ci-watcher owns this", "ci") { return "label prefix"; }
     if !inventory_prompt("", "", 150, 200).contains("head_behind") { return "behind prompt"; }
     if !inventory_prompt("", "", 150, 200).contains("search_tool") { return "search prompt"; }

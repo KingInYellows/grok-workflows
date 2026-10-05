@@ -507,8 +507,8 @@ fn self_check() {
     if quote_names_command("scripts/verify.sh --component docs", "all | python | docs | security") != true {
         return "docs token rejected";
     }
-    if looks_dated_goal("docs/goals/2026-10-05-reconcile-private-repo-scope.md") != true { return "dated path missed"; }
-    if looks_dated_goal("docs/goals/reconcile-private-repo-scope.md") { return "dateless path looked dated"; }
+    if looks_dated_goal("docs/goals/2026-01-01-example-goal.md") != true { return "dated path missed"; }
+    if looks_dated_goal("docs/goals/example-goal.md") { return "dateless path looked dated"; }
     if looks_dated_goal("docs/goals/GOAL_NEXT.md") { return "goal next looked dated"; }
     let short_w = body_witness_parts("alpha");
     if map_str(short_w, "head") != "alpha" || map_str(short_w, "tail") != "alpha" { return "short witness"; }
