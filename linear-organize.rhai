@@ -1115,13 +1115,13 @@ fn self_check() {
     let done_zero = census([sample_issue("ZED", "completed", 0, "c1", [], [], false)], "c1", true, states, 15, 20);
     if finding_has(done_zero.findings, "ZED", "priority_missing") { return "done priority"; }
     let ranked = sort_actions([
-        #{ identifier: "NSWCH-19", kind: "clear_cycle" },
-        #{ identifier: "NSWCH-6", kind: "clear_cycle" },
-        #{ identifier: "NSWCH-29", kind: "clear_cycle" },
+        #{ identifier: "EX-19", kind: "clear_cycle" },
+        #{ identifier: "EX-6", kind: "clear_cycle" },
+        #{ identifier: "EX-29", kind: "clear_cycle" },
     ]);
-    if map_str(ranked[0], "identifier") != "NSWCH-6" { return "ident order"; }
-    if map_str(ranked[1], "identifier") != "NSWCH-19" { return "ident order mid"; }
-    if map_str(ranked[2], "identifier") != "NSWCH-29" { return "ident order tail"; }
+    if map_str(ranked[0], "identifier") != "EX-6" { return "ident order"; }
+    if map_str(ranked[1], "identifier") != "EX-19" { return "ident order mid"; }
+    if map_str(ranked[2], "identifier") != "EX-29" { return "ident order tail"; }
     if actions_for(checked.actions, "PRI0").len() != 0 { return "priority action"; }
     if !finding_has(checked.findings, "PRI0", "priority_missing") { return "priority finding"; }
     if !finding_has(checked.findings, "OUT", "started_outside_cycle") { return "outside cycle"; }
@@ -1136,11 +1136,11 @@ fn self_check() {
     }
     if held_ev == "" { return "blocker evidence"; }
     let left = left_open_rows(#{ proposals: [
-        #{ identifier: "NSWCH-10", shipped: false, evidence: "" },
-        #{ identifier: "NSWCH-11", shipped: true, evidence: "abc" },
+        #{ identifier: "EX-10", shipped: false, evidence: "" },
+        #{ identifier: "EX-11", shipped: true, evidence: "abc" },
     ] });
     if left.len() != 1 { return "left open count"; }
-    if map_str(left[0], "identifier") != "NSWCH-10" { return "left open id"; }
+    if map_str(left[0], "identifier") != "EX-10" { return "left open id"; }
     if finding_has(checked.findings, "HELD", "broken_blocker") { return "done blocker broken"; }
     let shards = shard_ids([
         sample_issue("A", "backlog", 2, "", [], [], false),
@@ -1194,7 +1194,7 @@ fn self_check() {
     if !detail_prompt("[]").contains("need_description") { return "detail prompt"; }
     if !ship_skeptic_prompt("main", "{}").contains("todos/debt") { return "skeptic debt"; }
     if !ship_skeptic_prompt("main", "{}").contains("Do not read CI") { return "skeptic ci"; }
-    if !blocked_prompt("team", "medianest").contains("no_blocked_filter") { return "blocked prompt"; }
+    if !blocked_prompt("team", "example").contains("no_blocked_filter") { return "blocked prompt"; }
     if !shipped_prompt("main", "[]").contains("every commit") { return "every commit"; }
     if !detail_prompt("[]").contains("Always return blocked_by") { return "detail blockers"; }
     if !label_skeptic_prompt("{}").contains("ASCII case does not matter") { return "label skeptic case"; }
@@ -1204,7 +1204,7 @@ fn self_check() {
         #{ identifier: "A", blocked_by: ["OLD"], blocker_states: [#{ identifier: "OLD", status_type: "completed", found: true }] },
     ]);
     if copy_strings(map_get(enriched[0], "blocked_by")).len() != 1 { return "merge blockers"; }
-    if !cycle_closed_prompt("team", "medianest", "c1", 40).contains("still on one cycle") { return "cycle prompt"; }
+    if !cycle_closed_prompt("team", "example", "c1", 40).contains("still on one cycle") { return "cycle prompt"; }
     let scoped = scope_text("intro text Remaining scope: delete the password routes");
     if !scoped.contains("Remaining scope") { return "scope marker"; }
     if scoped.contains("intro text") { return "scope prefix"; }
@@ -1219,7 +1219,7 @@ fn self_check() {
     let plan_issues = [
         sample_issue("S1", "started", 1, "c1", ["Bug"], [], false),
         sample_issue("B1", "backlog", 2, "", [], [], false),
-        sample_issue("L1", "backlog", 3, "", ["Bug"], ["MED-1"], false),
+        sample_issue("L1", "backlog", 3, "", ["Bug"], ["EX-1"], false),
     ];
     let plan = detail_plan(plan_issues, 15, 20);
     if plan.len() != 3 { return "plan count"; }
@@ -1227,25 +1227,25 @@ fn self_check() {
     if plan_blockers.len() != 1 { return "plan blockers"; }
     if map_str(plan_blockers[0], "identifier") != "L1" { return "plan blocker id"; }
     let grouped = report_md("h\n", [], [
-        #{ identifier: "MED-1", kind: "mark_done", status: "report_only", detail: "confirm_done is false", evidence: "abc" },
-        #{ identifier: "MED-2", kind: "clear_cycle", status: "proposed", detail: "x", evidence: "" },
+        #{ identifier: "EX-1", kind: "mark_done", status: "report_only", detail: "confirm_done is false", evidence: "abc" },
+        #{ identifier: "EX-2", kind: "clear_cycle", status: "proposed", detail: "x", evidence: "" },
     ], [
-        #{ identifier: "MED-3", kind: "blocker_done", status: "report_only", detail: "MED-9", evidence: "" },
-        #{ identifier: "MED-4", kind: "priority_missing", status: "report_only", detail: "priority is 0", evidence: "" },
-        #{ identifier: "MED-5", kind: "priority_missing", status: "report_only", detail: "priority is 0", evidence: "" },
+        #{ identifier: "EX-3", kind: "blocker_done", status: "report_only", detail: "EX-9", evidence: "" },
+        #{ identifier: "EX-4", kind: "priority_missing", status: "report_only", detail: "priority is 0", evidence: "" },
+        #{ identifier: "EX-5", kind: "priority_missing", status: "report_only", detail: "priority is 0", evidence: "" },
     ], [
-        #{ identifier: "NSWCH-10", detail: "shipped false" },
+        #{ identifier: "EX-10", detail: "shipped false" },
     ]);
     let done_at = grouped.index_of("## Done proposals");
     let act_at = grouped.index_of("## Actions");
     let pri_at = grouped.index_of("## Priority missing");
     if done_at == () || act_at == () || pri_at == () { return "report sections"; }
     if done_at > act_at || act_at > pri_at { return "report order"; }
-    if grouped.contains("### MED-4") { return "priority heading"; }
-    if !grouped.contains("NSWCH-10") { return "left open report"; }
-    if !list_prompt("team", "medianest", 2, "", 150).contains("Do not call get_issue") { return "list get"; }
-    if !list_prompt("team", "medianest", 2, "", 150).contains("priority 2") { return "list priority"; }
-    if !list_prompt("team", "medianest", 2, "", 150).contains("Do not page completed, canceled, or duplicate") { return "list closed"; }
+    if grouped.contains("### EX-4") { return "priority heading"; }
+    if !grouped.contains("EX-10") { return "left open report"; }
+    if !list_prompt("team", "example", 2, "", 150).contains("Do not call get_issue") { return "list get"; }
+    if !list_prompt("team", "example", 2, "", 150).contains("priority 2") { return "list priority"; }
+    if !list_prompt("team", "example", 2, "", 150).contains("Do not page completed, canceled, or duplicate") { return "list closed"; }
     let closed_merge = merge_listed([
         [#{ identifier: "C", url: "https://linear.app/c", title: "C", priority: 1, status_type: "completed", state_name: "Done", labels: [], cycle_id: "", blocked_by: [], description_empty: false }],
         [#{ identifier: "D", url: "https://linear.app/d", title: "D", priority: 2, status_type: "duplicate", state_name: "Duplicate", labels: [], cycle_id: "", blocked_by: [], description_empty: false }, #{ identifier: "E", url: "https://linear.app/e", title: "E", priority: 2, status_type: "canceled", state_name: "Canceled", labels: [], cycle_id: "", blocked_by: [], description_empty: false }],
