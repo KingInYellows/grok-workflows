@@ -28,6 +28,7 @@ let ideation_schema = #{
         "dirty": #{ "type": "boolean" },
         "refused": #{ "type": "boolean" },
         "as_of": #{ "type": "string" },
+        "trunk_ref": #{ "type": "string" },
         "roots": #{ "type": "array", "maxItems": 12, "items": #{ "type": "string" } },
         "heat": #{ "type": "array", "maxItems": 8, "items": #{ "type": "string" } },
     },
@@ -130,7 +131,7 @@ let verdict_schema = #{
 
 let finalize_schema = #{
     "type": "object",
-    "required": ["slug", "companion_name", "goal_md", "next_md", "goal_rel", "next_rel"],
+    "required": ["slug", "companion_name", "goal_md", "next_md", "goal_rel", "next_rel", "refuse_reason"],
     "properties": #{
         "slug": #{ "type": "string" },
         "companion_name": #{ "type": "string" },
@@ -138,6 +139,7 @@ let finalize_schema = #{
         "next_md": #{ "type": "string" },
         "goal_rel": #{ "type": "string" },
         "next_rel": #{ "type": "string" },
+        "refuse_reason": #{ "type": "string" },
     },
 };
 
@@ -277,6 +279,7 @@ fn done_when_block() {
     s += "Set UNKNOWN only when those files name no runner. Do not invent a command. ";
     s += "The runner may stay green on current trunk. The outcome names the new assertion that runner must gain. That assertion is the proof. The green suite is not. ";
     s += "The runner must execute or read the file the outcome changes. A suite that never opens that file is not its runner. ";
+    s += "If the outcome is an owner or household evidence step, and an opened planning doc says the suite does not prove that step, set done_when_command to EVIDENCE. done_when_source is that doc. done_when_quote is the unchecked line. The suite is a fence, not the product runner. ";
     s += "A command in this git root does not prove a change whose in-scope files live in a sibling repo. Use the sibling's test command as the product gate, and list this repo's suite only as a scope fence. ";
     s += "A name or substring ban is a scope fence. It does not prove two callers share one production row. ";
     s += "When the outcome is one shared record, row, or store, done-when must assert the required arguments of that write. A test double that drops those arguments must fail the test. ";
@@ -290,6 +293,7 @@ fn done_when_block() {
 }
 
 fn companion_name_for(slug) {
+    if non_empty(slug) != true { return ""; }
     let base = "goal-" + slug;
     if base == "repo-map" { return base + "-exec"; }
     if base == "workspace-map" { return base + "-exec"; }
@@ -547,10 +551,13 @@ idea_prompt += "Walk up to .git only when the working directory is not itself a 
 idea_prompt += "Set refused=true only when args.root is unset AND the working directory is not a git root AND more than one distinct git repo (not worktrees of the same repo) is visible. ";
 idea_prompt += "Worktrees of one repo count as one repo. Run git rev-parse --show-toplevel, git branch --show-current, git status --porcelain, git worktree list. ";
 idea_prompt += "If those git commands cannot run, read .git/HEAD when .git is a directory, or the gitdir named by a .git file. Set branch from that ref. Leave dirty=false. Do not infer dirty from the index, a reflog, or sibling trees. ";
-idea_prompt += "If args.as_of is empty, set as_of from `git log -1 --format=%cs` (commit date YYYY-MM-DD). If git log cannot run, leave as_of empty. Do not use the wall clock or a reflog timestamp. ";
+idea_prompt += "If args.as_of is empty, set as_of to the commit date (YYYY-MM-DD) of the trunk this plan implements from, not wall clock and not a stale local HEAD. ";
+idea_prompt += "Resolve trunk with `git rev-parse --abbrev-ref origin/HEAD`, then origin/main, then origin/master, then local HEAD. ";
+idea_prompt += "Run `git log -1 --format=%cs` on that ref. If git log cannot run, leave as_of empty. Do not use the wall clock or a reflog timestamp. ";
+idea_prompt += "Set trunk_ref to the ref you dated. ";
 idea_prompt += "Read AGENTS.md, AGENTS.project.md, README.md if present. List heat notes (open work, dirty tree, named branches) you actually observed. ";
 idea_prompt += "Empty heat is valid ONLY after you inspected git status and those files. ";
-idea_prompt += "Return git_root, branch, head (full git rev-parse HEAD, or the sha from .git/HEAD), dirty, refused, roots, heat, as_of.";
+idea_prompt += "Return git_root, branch, head (full git rev-parse HEAD, or the sha from .git/HEAD), dirty, refused, roots, heat, as_of, trunk_ref.";
 
 let idea = agent(idea_prompt, #{
     label: "ideate:root",
@@ -561,6 +568,7 @@ let idea = agent(idea_prompt, #{
 let git_root = root;
 let branch = "";
 let head = "";
+let trunk_ref = "";
 let dirty = false;
 let refused = false;
 let roots = [];
@@ -569,6 +577,7 @@ if idea != () && idea.success == true && idea.output != () {
     if non_empty(idea.output.git_root) { git_root = trimmed(idea.output.git_root); }
     branch = trimmed(idea.output.branch);
     if non_empty(idea.output.head) { head = trimmed(idea.output.head); }
+    if idea.output.trunk_ref != () && non_empty(idea.output.trunk_ref) { trunk_ref = trimmed(idea.output.trunk_ref); }
     if idea.output.dirty == true { dirty = true; }
     if idea.output.refused == true && root == "" && git_root == "" { refused = true; }
     if idea.output.refused == true && git_root != "" {
@@ -603,6 +612,7 @@ let ctx = json_encode(#{
     git_root: git_root,
     branch: branch,
     head: head,
+    trunk_ref: trunk_ref,
     dirty: dirty,
     as_of: as_of,
     horizon: horizon_value,
@@ -818,6 +828,7 @@ syn_prompt += "Candidates JSON:\n" + json_encode(candidates) + "\n";
 syn_prompt += "Evidence JSON:\n" + json_encode(evidence) + "\n";
 syn_prompt += "why_now is 3-6 sentences citing kept evidence paths. rejected must be length 2. ";
 syn_prompt += "Set done_when_command to UNKNOWN only when the opened files name no runner for the changing package. A repo-root quote that says how to test that package is a runner. Do not invent commands. ";
+syn_prompt += "When the outcome is an owner evidence step the suite does not prove, set done_when_command to EVIDENCE and quote the unchecked planning line. Do not attach the green suite as that command. ";
 syn_prompt += "The outcome names the new assertion that is still false on trunk. Do not treat a green suite as that assertion. ";
 syn_prompt += "If in_scope is a sibling repo, done_when_source must be that sibling's file, not this repo's package.json. ";
 syn_prompt += "Outcome is the production invariant in one sentence. It does not name a branch, a HEAD sha, or a submit ban. ";
@@ -855,11 +866,12 @@ let pack = json_encode(#{
     evidence: evidence,
     branch: branch,
     head: head,
+    trunk_ref: trunk_ref,
     dirty: dirty,
 });
 let skeptics = [
-    "Attack horizon fit. If slug is empty, pick the best week-horizon candidate via replacement_slug. Set too_short=true if the primary is a same-day copy tweak while stacked PRs, dirty mixed trees, or a product loop exist. Set real=true only if you re-opened files that support keeping this pick. Do not treat a planner stub or previous GOAL_NEXT as the pick. Leave callee_contract empty. Set terminal to an empty string. Implementation starts from trunk (main or master, whichever ref exists), not the checked-out branch. For every claim that a write already passes its required arguments, open the trunk copy with git show <trunk>:path. Set premise_on_trunk false when that claim is false on trunk. Set premise_on_trunk true only when you opened the trunk copy and the claim holds. Leave premise_on_trunk unset when you did not check.",
-    "Attack done-when and evidence. A runner counts when you opened the quoted line and it is a real command in the changing package's AGENTS.md, Makefile, package.json, or scripts/verify.sh, or in the repo-root copy of those files when the quote says how to test that package. Set real=false if the command is UNKNOWN, invented, or the quote does not match the opened line. Set real=false if the runner does not execute or read the file the outcome changes. Set real=false if the outcome's new assertion is already true on trunk. Set real=true when the runner quote matches, the runner reaches the file the outcome changes, and you opened a current file showing that assertion is still false. A suite that stays green today is the runner, not proof the outcome already holds. Do not set real=false only because the new assertion is absent. A command in this git root does not prove a sibling-repo change. A substring or name ban is a fence. If the outcome is one shared record, row, or store, set real=false unless done-when asserts the write's required arguments and a test double that drops them would fail. Put those argument names in callee_contract. If you cannot find them, set callee_contract to UNKNOWN plus the file to open. Do not set too_short for a wrong package. too_short is only for a horizon that is too small. If slug is empty, set real=false and name a candidate replacement_slug that has a file-backed runner. Set terminal to an empty string.",
+    "Attack horizon fit. If slug is empty, pick the best week-horizon candidate via replacement_slug. Set too_short=true if the primary is a same-day copy tweak while stacked PRs, dirty mixed trees, or a product loop exist. Set real=true only if you re-opened files that support keeping this pick. Do not treat a planner stub or previous GOAL_NEXT as the pick. Leave callee_contract empty. Set terminal to an empty string. Implementation starts from trunk (main or master, whichever ref exists), not the checked-out branch. For every claim that a write already passes its required arguments, open the trunk copy with git show <trunk>:path. premise_on_trunk is about the synthesized contract, not about whether the outcome is finished. Set premise_on_trunk false only when the goal's claimed write arguments or callee behavior contradict the trunk source you opened with git show <trunk>:path. Set premise_on_trunk true when that contract matches the trunk source. Leave premise_on_trunk unset when the only finding is that the desired outcome is not finished yet. Trunk is origin/main or origin/master when that ref exists. Do not judge refs/heads/main when it is behind that remote.",
+    "Attack done-when and evidence. A runner counts when you opened the quoted line and it is a real command in the changing package's AGENTS.md, Makefile, package.json, or scripts/verify.sh, or in the repo-root copy of those files when the quote says how to test that package. Set real=false if the command is UNKNOWN, invented, or the quote does not match the opened line. Set real=false if the runner does not execute or read the file the outcome changes. Set real=false if the outcome's new assertion is already true on trunk. If done_when_command is EVIDENCE, set real=true only when you opened done_when_source, the quote is present, and that checklist item is still open on trunk. Set real=false when the quote is missing or the box is already checked. Do not reject EVIDENCE only because the suite never opens a live row. Set real=true when the runner quote matches, the runner reaches the file the outcome changes, and you opened a current file showing that assertion is still false. A suite that stays green today is the runner, not proof the outcome already holds. Do not set real=false only because the new assertion is absent. A command in this git root does not prove a sibling-repo change. A substring or name ban is a fence. If the outcome is one shared record, row, or store, set real=false unless done-when asserts the write's required arguments and a test double that drops them would fail. Put those argument names in callee_contract. If you cannot find them, set callee_contract to UNKNOWN plus the file to open. Do not set too_short for a wrong package. too_short is only for a horizon that is too small. If slug is empty, set real=false and name a candidate replacement_slug that has a file-backed runner. Set terminal to an empty string.",
     "Attack callee contract and terminal state. If in_scope pins, launches, or speaks a protocol to another program, open that program's source and set real=true only when callee_contract quotes its deadlines, the env it reads, and the argv flags whose absence changes a hash. A fast fake success does not prove a deadline or a child env. If you cannot open the callee, set real=false and callee_contract to UNKNOWN plus the path you tried. If the outcome is one shared record, row, or store, callee_contract must name the required write arguments even when no external program is launched. Do not clear those names. If nothing is pinned, launched, or a shared write, set real=true, callee_contract to empty, and say so in reason. If the outcome both forbids gt submit and requires a PR number to archive or close, set real=false and terminal to leave-shell. If archival requires the number a submit command prints, set terminal to submit-then-archive. On horizon=week, when no PR number is required, set terminal to local-commit. On horizon=merge, when no PR number is required, set terminal to no-submit. Set too_short=false.",
 ];
 let ajobs = [];
@@ -932,8 +944,13 @@ if ares.len() > 1 && usable_verdict(ares[1]) {
 }
 if ares.len() > 0 && usable_verdict(ares[0]) {
     if ares[0].output.premise_on_trunk == false {
-        if rejected_slug == "" { rejected_slug = slug; }
-        log("Horizon premise_on_trunk=false; rejecting slug=" + slug);
+        let why = short_reason(ares[0].output.reason);
+        if rejected_slug == "" {
+            rejected_slug = slug;
+            log("Horizon premise contradicted on trunk; rejecting slug=" + slug + " reason=" + why);
+        } else {
+            log("Horizon premise contradicted on trunk; slug already rejected=" + slug + " reason=" + why);
+        }
     }
 }
 if rejected_slug != "" {
@@ -963,12 +980,14 @@ pack = json_encode(#{
     evidence: evidence,
     branch: branch,
     head: head,
+    trunk_ref: trunk_ref,
     dirty: dirty,
 });
 
 phase("Finalize");
 let goal_md = "";
 let next_md = "";
+let refuse_reason = "";
 let fin_prompt = "";
 fin_prompt += "You are a cold subagent. Write the two markdown documents from the structured pick. Do not implement. ";
 fin_prompt += forbid_block();
@@ -976,7 +995,9 @@ fin_prompt += "If synthesize slug is empty OR too_short majority on horizon=week
 fin_prompt += "A runner quoted from the repo-root AGENTS.md, Makefile, package.json, or scripts/verify.sh counts when that quote says how to test the changing package. If in-scope paths are in a sibling repo, the product gate is that sibling's test command. This repo's typecheck, test, or eval chain is a scope fence in Done when, not the only command. Do not expand done-when to this repo's package.json just because an adversary set too_short. ";
 fin_prompt += "Do not keep slug next-goal. Do not leak planner internals (schema failures, stub markdown, short_votes) into the user docs. ";
 fin_prompt += "If adversarial slots were unverified, keep the synthesize pick when it exists; otherwise pick the strongest file-backed candidate. ";
-fin_prompt += "If rejected_slug is non-empty, that slug was disproved. Do not return it. Pick a different surviving candidate that has a file-backed command in the package it changes. If none qualify, return an empty slug and empty goal_md and next_md. ";
+fin_prompt += "If rejected_slug is non-empty, that slug was disproved. Do not return it. A title in pick.rejected is not disproved unless its slug equals rejected_slug. ";
+fin_prompt += "Pick a different surviving candidate. A file-backed command qualifies. EVIDENCE also qualifies when its quote is a still-open checklist line and the suite is only a fence. ";
+fin_prompt += "Return an empty slug and empty goal_md and next_md only when every surviving candidate lacks both. Set refuse_reason to one sentence when slug is empty, and to an empty string when slug is set. ";
 fin_prompt += "If the synthesize command is UNKNOWN, open the repo-root AGENTS.md, Makefile, package.json, and scripts/verify.sh and use the runner those files name for the changing package. Set UNKNOWN only when none of them name a runner. The Invariant is the assertion that is still false on trunk. Done when runs that existing runner and states the assertion the runner must gain. ";
 fin_prompt += "Exactly two rejected alternatives, not more. ";
 fin_prompt += "Terminal is exactly one of local-commit, submit-then-archive, leave-shell, no-submit. ";
@@ -1007,7 +1028,7 @@ fin_prompt += "Adversarial notes JSON:\n" + json_encode(#{
     rejected_slug: rejected_slug,
     proof_reason: proof_reason,
 }) + "\n";
-fin_prompt += "Return slug, companion_name, goal_md, next_md, goal_rel, next_rel.";
+fin_prompt += "Return slug, companion_name, goal_md, next_md, goal_rel, next_rel, refuse_reason.";
 
 let fin = ();
 if skip_output != true {
@@ -1028,12 +1049,24 @@ if as_of == "" {
     goal_rel = "docs/goals/" + slug + ".md";
 }
 if fin != () && fin.success == true && fin.output != () {
-    if non_empty(fin.output.slug) { slug = trimmed(fin.output.slug); }
+    slug = trimmed(fin.output.slug);
     if non_empty(fin.output.companion_name) { companion = trimmed(fin.output.companion_name); }
     if non_empty(fin.output.goal_md) { goal_md = trimmed(fin.output.goal_md); }
     if non_empty(fin.output.next_md) { next_md = trimmed(fin.output.next_md); }
     if non_empty(fin.output.goal_rel) { goal_rel = trimmed(fin.output.goal_rel); }
     if non_empty(fin.output.next_rel) { next_rel = trimmed(fin.output.next_rel); }
+    if fin.output.refuse_reason != () {
+        refuse_reason = short_reason(fin.output.refuse_reason);
+    }
+    if non_empty(refuse_reason) {
+        log("Finalize refuse_reason=" + refuse_reason);
+    }
+    if non_empty(slug) != true {
+        goal_md = "";
+        next_md = "";
+        skip_output = true;
+        log("Finalize returned an empty slug; not writing goals");
+    }
 } else if skip_output != true {
     log("Finalize unusable; scratch docs will be empty");
 }
@@ -1060,14 +1093,24 @@ if companion == "goal-planning" || companion == "repo-map" || companion == "work
     companion = companion + "-exec";
 }
 
-if docs_goals_rel_ok(goal_rel) != true || non_empty(slug) != true {
-    log("Finalize goal_rel was outside docs/goals/ or slug empty; restoring constructed path");
-    goal_rel = restore_goal_rel(as_of, slug);
-    if docs_goals_rel_ok(goal_rel) != true { goal_rel = "docs/goals/GOAL.md"; }
-}
-if docs_goals_rel_ok(next_rel) != true {
-    log("Finalize next_rel was outside docs/goals/; restoring GOAL_NEXT.md");
-    next_rel = "docs/goals/GOAL_NEXT.md";
+if non_empty(slug) != true {
+    companion = "";
+    goal_rel = "";
+    next_rel = "";
+    goal_md = "";
+    next_md = "";
+    skip_output = true;
+} else {
+    if companion == "" || companion == "goal-" { companion = companion_name_for(slug); }
+    if docs_goals_rel_ok(goal_rel) != true {
+        log("Finalize goal_rel was outside docs/goals/; restoring constructed path");
+        goal_rel = restore_goal_rel(as_of, slug);
+        if docs_goals_rel_ok(goal_rel) != true { goal_rel = "docs/goals/GOAL.md"; }
+    }
+    if docs_goals_rel_ok(next_rel) != true {
+        log("Finalize next_rel was outside docs/goals/; restoring GOAL_NEXT.md");
+        next_rel = "docs/goals/GOAL_NEXT.md";
+    }
 }
 
 write_scratch_file("goal.md", goal_md);
@@ -1116,13 +1159,15 @@ if out != () && out.success == true && out.output != () {
 if extra.len() > 0 {
     log("Output reported extra writes; treating as a contract violation");
     wrote = false;
+    write_denied = true;
 }
 
-let verified = verify_goal_files(git_root, goal_rel, next_rel, "output:verify", verify_schema);
-if verified == true && extra.len() == 0 {
-    wrote = true;
-} else {
-    wrote = false;
+if wrote == true {
+    let verified = verify_goal_files(git_root, goal_rel, next_rel, "output:verify", verify_schema);
+    if verified != true || extra.len() > 0 {
+        wrote = false;
+        write_denied = true;
+    }
 }
 
 if wrote != true {
@@ -1137,17 +1182,27 @@ if wrote != true {
         msg += ", then resume this run.";
         log(msg);
         await_user("verification", msg);
-        verified = verify_goal_files(git_root, goal_rel, next_rel, "output:verify-after-pause", verify_schema);
+        let verified = verify_goal_files(git_root, goal_rel, next_rel, "output:verify-after-pause", verify_schema);
         if verified == true { wrote = true; }
     }
 }
 } else {
-    log("Not writing docs/goals after rejected slug=" + rejected_slug);
+    if rejected_slug != "" {
+        log("Not writing docs/goals after rejected slug=" + rejected_slug);
+    } else {
+        log("Not writing docs/goals; slug is empty");
+    }
 }
 
 let wrote_label = "false";
 if wrote == true { wrote_label = "true"; }
-let summary = "Planned slug=" + slug + " horizon=" + horizon_value + " wrote=" + wrote_label;
+let summary = "";
+if non_empty(slug) != true {
+    summary = "No goal written horizon=" + horizon_value + " wrote=" + wrote_label;
+    if non_empty(refuse_reason) { summary += " refuse=" + refuse_reason; }
+} else {
+    summary = "Planned slug=" + slug + " horizon=" + horizon_value + " wrote=" + wrote_label;
+}
 if rejected_slug != "" { summary += " rejected=" + rejected_slug; }
 if proof_reason != "" { summary += " proof=" + proof_reason; }
 log(summary);
@@ -1155,6 +1210,7 @@ complete(#{
     summary: summary,
     slug: slug,
     companion: companion,
+    refuse_reason: refuse_reason,
     horizon: horizon_value,
     git_root: git_root,
     branch: branch,
