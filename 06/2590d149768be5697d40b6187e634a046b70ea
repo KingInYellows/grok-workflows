@@ -1,0 +1,39 @@
+ship-next-issue.rhai
+  s_e7499ac45b6b41::t_cdb6f1f86639dd 1-1062,1071-1074,1079,1083-1084,1089,1095,1099,1101-1102,1104,1107
+  s_e7499ac45b6b41::t_6564d51cd9b82f 1063-1065,1068-1070
+  s_e7499ac45b6b41::t_fd5eed94b799a7 1075-1078
+  s_e7499ac45b6b41::t_8c08b2075da74d 1080-1082
+  s_e7499ac45b6b41::t_e187f01c5e28f6 1085-1088
+  s_e7499ac45b6b41::t_581f0fcb336325 1090-1094
+  s_e7499ac45b6b41::t_a9d7a275797eb7 1096-1098
+  s_e7499ac45b6b41::t_e14581380ea941 1100
+  s_e7499ac45b6b41::t_368a4b09b61b61 1103
+  s_e7499ac45b6b41::t_9d6530924b2ee2 1105-1106
+  s_e7499ac45b6b41::t_83e407f792add2 1108-1110
+README.md
+  s_4dea7a2b915137::t_ea8e6cefda6c0b 30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "062590d149768be5697d40b6187e634a046b70ea",
+  "prompts": {},
+  "sessions": {
+    "s_4dea7a2b915137": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87a2dd5d-2b29-41a0-8294-3f5034ff7209",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    },
+    "s_e7499ac45b6b41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a10d23-c0e9-7150-a938-a750ab63ea5a",
+        "model": "unknown"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
