@@ -19,6 +19,7 @@ const MAX_SHARD = 25;
 const MAX_SHIP_SHARD = 5;
 const MAX_DETAIL_SHARD = 5;
 const MAX_CYCLE_CLOSED = 40;
+const MAX_LABELS = 200;
 
 fn trimmed(s) {
     if type_of(s) == "string" {
@@ -915,9 +916,9 @@ fn left_open_rows(out) {
 }
 
 fn label_grounded(evidence, name) {
-    let token = trimmed(name);
+    let token = lower_ascii(trimmed(name));
     if token == "" { return false; }
-    let ev = " " + trimmed(evidence) + " ";
+    let ev = " " + lower_ascii(evidence) + " ";
     if ev.contains(" " + token + " ") { return true; }
     if ev.contains("`" + token + "`") { return true; }
     if ev.contains("\"" + token + "\"") { return true; }
@@ -1180,15 +1181,23 @@ fn self_check() {
     );
     if labels.rows.len() != 1 { return "label keep"; }
     if labels.dropped.len() != 1 { return "label drop"; }
-    if !inventory_prompt("", "", 150).contains("head_behind") { return "behind prompt"; }
-    if !inventory_prompt("", "", 150).contains("search_tool") { return "search prompt"; }
-    if !inventory_prompt("", "", 150).contains("Do not call get_issue") { return "index get"; }
+    if !label_grounded("Create unprivileged Debian/Ubuntu LXC on Proxmox (2-4 vCPU, 2-4GB RAM).", "proxmox") { return "label case"; }
+    if !label_grounded("Proxmox hosts the guest", "proxmox") { return "label start"; }
+    if !label_grounded("runs on Proxmox", "proxmox") { return "label end"; }
+    if label_grounded("the ci-watcher owns this", "ci") { return "label prefix"; }
+    if !inventory_prompt("", "", 150, 200).contains("head_behind") { return "behind prompt"; }
+    if !inventory_prompt("", "", 150, 200).contains("search_tool") { return "search prompt"; }
+    if !inventory_prompt("", "", 150, 200).contains("Do not call get_issue") { return "index get"; }
+    if !inventory_prompt("", "", 150, 200).contains("labels_truncated") { return "label cap prompt"; }
+    if !inventory_prompt("", "", 150, 200).contains("list_issue_labels") { return "label tool"; }
+    if !inventory_prompt("", "", 150, 200).contains("cursor") { return "label cursor"; }
     if !detail_prompt("[]").contains("need_description") { return "detail prompt"; }
     if !ship_skeptic_prompt("main", "{}").contains("todos/debt") { return "skeptic debt"; }
     if !ship_skeptic_prompt("main", "{}").contains("Do not read CI") { return "skeptic ci"; }
     if !blocked_prompt("team", "medianest").contains("no_blocked_filter") { return "blocked prompt"; }
     if !shipped_prompt("main", "[]").contains("every commit") { return "every commit"; }
     if !detail_prompt("[]").contains("Always return blocked_by") { return "detail blockers"; }
+    if !label_skeptic_prompt("{}").contains("ASCII case does not matter") { return "label skeptic case"; }
     let enriched = merge_blockers([
         sample_issue("A", "started", 2, "c1", ["Bug"], [], false),
     ], [
@@ -1283,7 +1292,7 @@ fn guardrails_text() {
     t
 }
 
-fn inventory_prompt(team_override, only_issue, max_issues) {
+fn inventory_prompt(team_override, only_issue, max_issues, max_labels) {
     let p = "You collect one Linear team's open issues for a health pass. Do not edit anything. Do not call a save tool.\n";
     p += guardrails_text();
     p += "Steps:\n";
@@ -1291,7 +1300,13 @@ fn inventory_prompt(team_override, only_issue, max_issues) {
     p += "2. The team override is in the packet. When it is non-empty, match that string. Otherwise match repo_name, case-insensitive, against the Linear team name or team key. Call search_tool, then the list-teams tool. Set team_match_count to the exact match count. When it is not 1, set ok false and return. Do not pick a fuzzy match.\n";
     p += "3. Run gt trunk --no-interactive and put that branch name in trunk. Run git fetch origin TRUNK, then git rev-list --count HEAD..origin/TRUNK. Put that integer in head_behind. Zero means HEAD already contains origin/TRUNK. When the fetch or the rev-list fails, set head_behind to -1 and name the command in error.\n";
     p += "4. Read the team workflow states. For each state return name, type, and id. type is the Linear statusType: backlog, unstarted, started, triage, completed, or canceled.\n";
-    p += "5. Read the team's existing labels. Return name and id. Create none.\n";
+    p += "5. Read the team's existing labels with list_issue_labels. Call search_tool, then that tool for the matched team. Pass limit ";
+    p += max_labels.to_string();
+    p += ". The tool defaults to 50 when limit is omitted, and its maximum is 250, so when the cap is above 250 pass limit 250 and follow the cursor. Do not omit limit. When the response includes a next-page cursor and the collected count is still below the cap, call list_issue_labels again with that cursor and the same team and limit. Stop when the cursor is absent or the collected count reaches ";
+    p += max_labels.to_string();
+    p += ". Return every collected name and id. Create none. When a cursor remains after the cap, keep the first ";
+    p += max_labels.to_string();
+    p += ", set error to labels_truncated, and still set ok true. Return the schema object. Do not write the catalog in prose.\n";
     p += "6. Read the current cycle. When one exists, set cycle_ok true and cycle_id to its id. When it does not, set cycle_ok false and cycle_id to an empty string. Still return ok true.\n";
     p += "7. Put the matched team's id in team_id. Set issues to an empty array and truncated to false. Do not page issues. Do not call get_issue. Parallel listers read the issue list.\n";
     p += "8. Set ok true only when the team, states, labels, and cycle were read.\n";
@@ -1388,7 +1403,7 @@ fn ship_skeptic_prompt(trunk, packet_json) {
 fn label_skeptic_prompt(packet_json) {
     let p = "You are a read-only skeptic for label proposals. Do not edit.\n";
     p += guardrails_text();
-    p += "Do not call any tool. Return one verdict per proposal with identifier, accept, and evidence. Set accept true only when the label is in the packet and the evidence quotes that label as its own word. A prefix of a longer word is accept false. Otherwise accept false.\n";
+    p += "Do not call any tool. Return one verdict per proposal with identifier, accept, and evidence. Set accept true only when the label is in the packet and the evidence quotes that label as its own word. ASCII case does not matter: test quotes Test. A prefix of a longer word is accept false. Otherwise accept false.\n";
     p += packet_line(packet_json);
     p
 }
@@ -1666,7 +1681,7 @@ let inventory_schema = #{
         },
         "labels": #{
             "type": "array",
-            "maxItems": 50,
+            "maxItems": MAX_LABELS,
             "items": #{
                 "type": "object",
                 "additionalProperties": false,
@@ -1862,7 +1877,7 @@ if args != () {
 
 phase("Inventory");
 let inventory_r = agent(
-    inventory_prompt(team_override, only_issue, MAX_ISSUES),
+    inventory_prompt(team_override, only_issue, MAX_ISSUES, MAX_LABELS),
     #{ label: "inventory", capability_mode: "all", output_schema: inventory_schema }
 );
 let inventory_out = ();
@@ -1991,6 +2006,10 @@ if list_failed > 0 {
 if map_bool(inventory_out, "truncated", false) {
     notes.push("collector truncated the open set before the script sort");
     log("collector truncated the open set before the script sort");
+}
+if map_str(inventory_out, "error") == "labels_truncated" {
+    notes.push("label catalog truncated to the schema cap");
+    log("label catalog truncated to the schema cap");
 }
 if kept.closed > 0 {
     let closed_note = "script dropped " + kept.closed.to_string() + " completed, canceled, or duplicate issues";
