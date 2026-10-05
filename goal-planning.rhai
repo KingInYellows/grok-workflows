@@ -8,7 +8,7 @@ let meta = #{
         #{ title: "Research", detail: "PRs/CI, verify commands, planning docs in parallel" },
         #{ title: "Validate", detail: "file-backed done-when commands and evidence paths" },
         #{ title: "Synthesize", detail: "one primary goal and two rejected alternatives" },
-        #{ title: "Adversarial", detail: "skeptics try to refute the pick" },
+        #{ title: "Adversarial", detail: "skeptics refute horizon, done-when package, callee contract, and terminal state" },
         #{ title: "Finalize", detail: "lock slug, docs, and companion name" },
         #{ title: "Output", detail: "write two docs/goals files, verify, pause if write is denied" },
     ],
@@ -16,7 +16,7 @@ let meta = #{
 
 const MAX_EVIDENCE = 15;
 const MAX_CANDIDATES = 6;
-const MAX_GOAL_WORDS = 400;
+const MAX_GOAL_WORDS = 550;
 
 let ideation_schema = #{
     "type": "object",
@@ -24,8 +24,10 @@ let ideation_schema = #{
     "properties": #{
         "git_root": #{ "type": "string" },
         "branch": #{ "type": "string" },
+        "head": #{ "type": "string" },
         "dirty": #{ "type": "boolean" },
         "refused": #{ "type": "boolean" },
+        "as_of": #{ "type": "string" },
         "roots": #{ "type": "array", "maxItems": 12, "items": #{ "type": "string" } },
         "heat": #{ "type": "array", "maxItems": 8, "items": #{ "type": "string" } },
     },
@@ -75,6 +77,7 @@ let validate_schema = #{
                 "source_file": #{ "type": "string" },
                 "quote": #{ "type": "string" },
                 "exists": #{ "type": "boolean" },
+                "package_root": #{ "type": "string" },
             },
         }},
         "kept_paths": #{ "type": "array", "maxItems": 15, "items": #{ "type": "string" } },
@@ -119,6 +122,9 @@ let verdict_schema = #{
         "reason": #{ "type": "string" },
         "evidence": #{ "type": "string" },
         "replacement_slug": #{ "type": "string" },
+        "callee_contract": #{ "type": "string" },
+        "terminal": #{ "type": "string" },
+        "premise_on_trunk": #{ "type": "boolean" },
     },
 };
 
@@ -187,6 +193,22 @@ fn non_empty(s) {
     trimmed(s) != ""
 }
 
+fn is_ymd(s) {
+    let t = trimmed(s);
+    if t.len() != 10 { return false; }
+    if t.sub_string(4, 1) != "-" { return false; }
+    if t.sub_string(7, 1) != "-" { return false; }
+    let i = 0;
+    while i < 10 {
+        if i != 4 && i != 7 {
+            let ch = t.sub_string(i, 1);
+            if ch < "0" || ch > "9" { return false; }
+        }
+        i += 1;
+    }
+    true
+}
+
 fn starts_with(s, prefix) {
     if type_of(s) != "string" || type_of(prefix) != "string" { return false; }
     if s.len() < prefix.len() { return false; }
@@ -241,6 +263,7 @@ fn ladder_block(horizon_value) {
         s += "Horizon is week: a long-running goal is days of work with ideation through delivery, not a same-day copy tweak. ";
         s += "Skip a one-check string/false-positive as the PRIMARY week goal when a stacked PR, product loop, or verified P0 exists. ";
         s += "Still pick ONE primary outcome, not a roadmap. ";
+        s += "One outcome is one behavior a single existing runner can gain. Other behaviors from the same plan go in out_of_scope. ";
     } else {
         s += "Horizon is merge: the smallest merge-blocking check may win, even if short. ";
     }
@@ -249,8 +272,20 @@ fn ladder_block(horizon_value) {
 
 fn done_when_block() {
     let s = "";
-    s += "Done-when must cite a command that exists in AGENTS.md, Makefile, package.json, or scripts/verify.sh. Quote the file. ";
-    s += "If no command exists, mark UNKNOWN and do not invent one. ";
+    s += "Done-when must cite a command that exists in AGENTS.md, Makefile, package.json, or scripts/verify.sh of the package whose files change. Quote that file. ";
+    s += "If that package has no test script, a runner quoted from the repo-root AGENTS.md, Makefile, package.json, or scripts/verify.sh counts when the quote says how to test that package and you opened both the quote and the package. ";
+    s += "Set UNKNOWN only when those files name no runner. Do not invent a command. ";
+    s += "The runner may stay green on current trunk. The outcome names the new assertion that runner must gain. That assertion is the proof. The green suite is not. ";
+    s += "The runner must execute or read the file the outcome changes. A suite that never opens that file is not its runner. ";
+    s += "A command in this git root does not prove a change whose in-scope files live in a sibling repo. Use the sibling's test command as the product gate, and list this repo's suite only as a scope fence. ";
+    s += "A name or substring ban is a scope fence. It does not prove two callers share one production row. ";
+    s += "When the outcome is one shared record, row, or store, done-when must assert the required arguments of that write. A test double that drops those arguments must fail the test. ";
+    s += "If the package has .venv/bin, the command sets PATH=\".venv/bin:$PATH\" and uses that interpreter. Bare python is not assumed to be on PATH. ";
+    s += "A combined log uses a brace group, { cmd1 && cmd2; } > log 2>&1. The form A && B > log captures only B. ";
+    s += "Each gate log starts with the line from git rev-parse HEAD. ";
+    s += "Run the full default suite once per commit that changes product code. Later checks rerun only the narrow gates unless HEAD changed. ";
+    s += "If the repo has a test that forbids one package importing another, and in-scope files cross that boundary, name that test and run it before the full suite. ";
+    s += "The quote is the recipe or the exact command line. A target: ## comment is not a quote. ";
     s
 }
 
@@ -300,12 +335,163 @@ fn usable_candidate(it) {
     it != () && non_empty(it.title) && non_empty(it.slug) && non_empty(it.why)
 }
 
+fn bad_git_path(path) {
+    let p = trimmed(path);
+    if p == ".git" { return true; }
+    if starts_with(p, ".git/") { return true; }
+    if contains_str(p, "/.git/") { return true; }
+    false
+}
+
+fn bad_url_fact(path, fact) {
+    let p = trimmed(path);
+    if starts_with(p, "http://") != true && starts_with(p, "https://") != true { return false; }
+    if contains_str(fact, "404") { return true; }
+    if contains_str(fact, "unauthenticated") { return true; }
+    if contains_str(fact, "Unauthenticated") { return true; }
+    if contains_str(fact, "unverified") { return true; }
+    if contains_str(fact, "Unverified") { return true; }
+    false
+}
+
 fn usable_path(it) {
-    it != () && non_empty(it.path) && non_empty(it.fact)
+    if it == () || non_empty(it.path) != true || non_empty(it.fact) != true { return false; }
+    if bad_git_path(it.path) { return false; }
+    if bad_url_fact(it.path, it.fact) { return false; }
+    true
+}
+
+fn strip_path_prefix(command) {
+    let c = trimmed(command);
+    if starts_with(c, "PATH=") != true { return c; }
+    let i = 0;
+    while i < c.len() {
+        if c.sub_string(i, 1) == " " {
+            return trimmed(c.sub_string(i + 1, c.len() - i - 1));
+        }
+        i += 1;
+    }
+    c
+}
+
+fn recipe_word(quote) {
+    if contains_str(quote, "pytest") { return true; }
+    if contains_str(quote, "mypy") { return true; }
+    if contains_str(quote, "python") { return true; }
+    if contains_str(quote, "ruff") { return true; }
+    if contains_str(quote, "npm") { return true; }
+    if contains_str(quote, "pnpm") { return true; }
+    false
+}
+
+fn drop_first(hay, phrase) {
+    if type_of(hay) != "string" || contains_str(hay, phrase) != true { return hay; }
+    let nlen = phrase.len();
+    let hlen = hay.len();
+    let i = 0;
+    while i + nlen <= hlen {
+        if hay.sub_string(i, nlen) == phrase {
+            let before = "";
+            if i > 0 { before = hay.sub_string(0, i); }
+            let after = "";
+            if i + nlen < hlen { after = hay.sub_string(i + nlen, hlen - i - nlen); }
+            return before + after;
+        }
+        i += 1;
+    }
+    hay
+}
+
+fn weak_quote(command, quote) {
+    if contains_str(quote, "##") != true { return false; }
+    let body = strip_path_prefix(command);
+    if body != "" && contains_str(quote, body) { return false; }
+    let q = quote;
+    q = drop_first(q, "Run pytest");
+    q = drop_first(q, "Run mypy");
+    q = drop_first(q, "Run python");
+    q = drop_first(q, "Run ruff");
+    q = drop_first(q, "Run npm");
+    q = drop_first(q, "Run pnpm");
+    if recipe_word(q) { return false; }
+    true
 }
 
 fn usable_command(it) {
-    it != () && non_empty(it.command) && non_empty(it.source_file) && it.exists == true
+    if it == () || non_empty(it.command) != true || non_empty(it.source_file) != true { return false; }
+    if it.exists != true { return false; }
+    let cmd = trimmed(it.command);
+    if cmd == "UNKNOWN" { return false; }
+    if contains_str(cmd, "<") { return false; }
+    if non_empty(it.quote) != true { return false; }
+    if weak_quote(cmd, trimmed(it.quote)) { return false; }
+    true
+}
+
+fn slug_excluded(slug, exclude) {
+    let s = trimmed(slug);
+    if s == "" { return false; }
+    for token in as_array(exclude) {
+        let t = trimmed(token);
+        if t != "" && contains_str(s, t) { return true; }
+    }
+    false
+}
+
+fn hyphen_tokens(slug) {
+    let tokens = [];
+    let current = "";
+    let s = trimmed(slug);
+    let i = 0;
+    while i < s.len() {
+        let ch = s.sub_string(i, 1);
+        if ch == "-" {
+            if current.len() >= 5 { tokens.push(current); }
+            current = "";
+        } else {
+            current += ch;
+        }
+        i += 1;
+    }
+    if current.len() >= 5 { tokens.push(current); }
+    tokens
+}
+
+fn shares_two_tokens(left, right) {
+    let overlap = 0;
+    for a in hyphen_tokens(left) {
+        for b in hyphen_tokens(right) {
+            if a == b { overlap += 1; }
+        }
+    }
+    overlap >= 2
+}
+
+fn token_dup(arr, slug) {
+    for x in as_array(arr) {
+        if x != () && shares_two_tokens(trimmed(x.slug), slug) { return true; }
+    }
+    false
+}
+
+fn evidence_index(arr, path) {
+    let want = trimmed(path);
+    let i = 0;
+    for item in as_array(arr) {
+        if item != () && trimmed(item.path) == want { return i; }
+        i += 1;
+    }
+    -1
+}
+
+fn short_reason(s) {
+    let t = trimmed(s);
+    if t.len() > 180 { return t.sub_string(0, 180); }
+    t
+}
+
+fn usable_verdict(r) {
+    r != () && r.success == true && r.output != () && non_empty(r.output.reason) && non_empty(r.output.evidence)
 }
 
 fn has_slug(arr, slug) {
@@ -321,6 +507,7 @@ let as_of = "";
 let root = "";
 let horizon_value = "week";
 let max_evidence = MAX_EVIDENCE;
+let exclude = [];
 if args != () {
     if args.as_of != () {
         let a = trimmed(args.as_of);
@@ -338,9 +525,15 @@ if args != () {
         max_evidence = args.max_evidence;
         if max_evidence > MAX_EVIDENCE { max_evidence = MAX_EVIDENCE; }
     }
+    if args.exclude != () {
+        for item in as_array(args.exclude) {
+            let token = trimmed(item);
+            if token != "" { exclude.push(token); }
+        }
+    }
 }
 
-log("goal-planning horizon=" + horizon_value + " max_evidence=" + max_evidence.to_string());
+log("goal-planning horizon=" + horizon_value + " max_evidence=" + max_evidence.to_string() + " exclude=" + exclude.len().to_string());
 
 phase("Ideation");
 let idea_prompt = "";
@@ -354,7 +547,7 @@ idea_prompt += "Worktrees of one repo count as one repo. Run git rev-parse --sho
 idea_prompt += "If args.as_of is empty, set as_of from `git log -1 --format=%cs` (commit date YYYY-MM-DD), not wall clock. ";
 idea_prompt += "Read AGENTS.md, AGENTS.project.md, README.md if present. List heat notes (open work, dirty tree, named branches) you actually observed. ";
 idea_prompt += "Empty heat is valid ONLY after you inspected git status and those files. ";
-idea_prompt += "Return git_root, branch, dirty, refused, roots, heat.";
+idea_prompt += "Return git_root, branch, head (full git rev-parse HEAD), dirty, refused, roots, heat.";
 
 let idea = agent(idea_prompt, #{
     label: "ideate:root",
@@ -364,6 +557,7 @@ let idea = agent(idea_prompt, #{
 
 let git_root = root;
 let branch = "";
+let head = "";
 let dirty = false;
 let refused = false;
 let roots = [];
@@ -371,10 +565,14 @@ let heat = [];
 if idea != () && idea.success == true && idea.output != () {
     if non_empty(idea.output.git_root) { git_root = trimmed(idea.output.git_root); }
     branch = trimmed(idea.output.branch);
+    if non_empty(idea.output.head) { head = trimmed(idea.output.head); }
     if idea.output.dirty == true { dirty = true; }
     if idea.output.refused == true { refused = true; }
     roots = as_array(idea.output.roots);
     heat = as_array(idea.output.heat);
+    if as_of == "" && idea.output.as_of != () && is_ymd(idea.output.as_of) {
+        as_of = trimmed(idea.output.as_of);
+    }
 } else {
     log("Ideation returned unusable output; continuing with args.root only");
 }
@@ -393,10 +591,12 @@ if refused == true && root == "" {
     });
 }
 
+if as_of == "" { log("as_of empty; goal filename will omit the date"); } else { log("as_of=" + as_of); }
 if git_root == "" { git_root = "."; }
 let ctx = json_encode(#{
     git_root: git_root,
     branch: branch,
+    head: head,
     dirty: dirty,
     as_of: as_of,
     horizon: horizon_value,
@@ -416,6 +616,7 @@ for lens in lenses {
     let bp = "";
     bp += "You are a cold subagent. Brainstorm at most 4 candidate long-horizon goals for this git root. ";
     bp += "MUST use read-only tools (read_file, list_dir, grep) on the git_root before answering. ";
+    bp += "Open at most 12 files. Do not crawl the tree. ";
     bp += forbid_block();
     bp += ladder_block(horizon_value);
     bp += "Lens (untrusted): " + lens + "\n";
@@ -433,34 +634,56 @@ for lens in lenses {
     li += 1;
 }
 let bres = parallel(bjobs);
-let candidates = [];
+let lens_lists = [];
 let dropped_unusable = 0;
 let dropped_dup = 0;
 let dropped_cap = 0;
+let dropped_exclude = 0;
 for r in bres {
+    let bucket = [];
     if r != () && r.success == true && r.output != () && r.output.candidates != () {
         for c in r.output.candidates {
             if usable_candidate(c) != true {
                 dropped_unusable += 1;
-            } else if has_slug(candidates, c.slug) {
-                dropped_dup += 1;
-            } else if candidates.len() < MAX_CANDIDATES {
-                candidates.push(c);
+            } else if slug_excluded(c.slug, exclude) {
+                dropped_exclude += 1;
             } else {
-                dropped_cap += 1;
+                bucket.push(c);
             }
         }
     }
+    lens_lists.push(bucket);
 }
-if dropped_unusable + dropped_dup + dropped_cap > 0 {
-    log("Brainstorm dropped unusable=" + dropped_unusable.to_string() + " dup=" + dropped_dup.to_string() + " cap=" + dropped_cap.to_string());
+let candidates = [];
+let cand_turn = 0;
+let cand_more = true;
+while cand_more == true && candidates.len() < MAX_CANDIDATES {
+    cand_more = false;
+    for b in lens_lists {
+        if cand_turn < b.len() {
+            cand_more = true;
+            let c = b[cand_turn];
+            if candidates.len() >= MAX_CANDIDATES {
+                dropped_cap += 1;
+            } else if has_slug(candidates, c.slug) || token_dup(candidates, trimmed(c.slug)) {
+                dropped_dup += 1;
+            } else {
+                candidates.push(c);
+            }
+        }
+    }
+    cand_turn += 1;
+    if cand_turn > 8 { break; }
+}
+if dropped_unusable + dropped_dup + dropped_cap + dropped_exclude > 0 {
+    log("Brainstorm dropped unusable=" + dropped_unusable.to_string() + " dup=" + dropped_dup.to_string() + " cap=" + dropped_cap.to_string() + " exclude=" + dropped_exclude.to_string());
 }
 log("Brainstorm kept " + candidates.len().to_string() + " candidates");
 
 phase("Research");
 let research_lenses = [
-    "Open PRs, Graphite stack, required checks, CI jobs. This repo is private: never curl/open github.com HTML or unauthenticated REST (that 404s and is not evidence). MUST call GitHub MCP: search_tool then use_tool for github__list_pull_requests / github__pull_request_read (get, get_status, get_check_runs). Authenticated gh is a fallback. If MCP and gh both fail, cite local git refs and .github/workflows only, set GitHub unverified, and do not assert MERGEABLE/CONFLICTING/required-check conclusions. Cap 8 paths.",
-    "Verify commands: read AGENTS.md, Makefile, package.json scripts, scripts/verify.sh if they exist. Quote exact commands. Do not invent. Cap 8 paths.",
+    "Open PRs, Graphite stack, required checks, CI jobs. This repo is private: never curl github.com and never call search_tool or use_tool. Run gh for pull requests and check runs. If gh fails, cite .github/workflows only, say GitHub is unverified, and do not assert MERGEABLE, CONFLICTING, or required-check conclusions. Cap 8 paths.",
+    "Verify commands: read AGENTS.md, Makefile, package.json scripts, scripts/verify.sh if they exist. Quote exact commands. Do not invent. If a planning doc names a sibling repo as the place the code changes, also quote that sibling's package.json scripts or AGENTS.md test command, and only if you opened it. Cap 8 paths.",
     "Planning heat: TECH_DEBT.md, CYCLE_PLAN.md, docs/planning/*, docs/goals/*, README. Ignore plans older than 90 days that contradict live CI/PRs. Cap 8 paths.",
 ];
 let rjobs = [];
@@ -468,7 +691,9 @@ let ri = 0;
 for lens in research_lenses {
     let rp = "";
     rp += "You are a cold subagent. Research live evidence for the next long-horizon goal. ";
-    rp += "MUST inspect files or GitHub/git before each fact. Do not cite a path you did not open. ";
+    rp += "MUST inspect files or gh before each fact. Do not cite a path you did not open. ";
+    rp += "Open at most 12 files. Do not crawl. ";
+    rp += "Never return a path under .git/ or containing /.git/. Those paths are dropped. Put ref and worktree facts in the fact sentence of a normal file or a pull-request URL. ";
     rp += forbid_block();
     rp += "Git root: " + git_root + ". Horizon: " + horizon_value + ".\n";
     rp += "Focus (untrusted): " + lens + "\n";
@@ -511,8 +736,14 @@ while keep_going == true && evidence.len() < max_evidence {
     for b in buckets {
         if turn < b.len() {
             keep_going = true;
-            if evidence.len() < max_evidence {
-                evidence.push(b[turn]);
+            let item = b[turn];
+            let seen = evidence_index(evidence, trimmed(item.path));
+            if seen >= 0 {
+                if trimmed(item.fact).len() > trimmed(evidence[seen].fact).len() {
+                    evidence[seen] = item;
+                }
+            } else if evidence.len() < max_evidence {
+                evidence.push(item);
             }
         }
     }
@@ -536,8 +767,10 @@ val_prompt += done_when_block();
 val_prompt += "Git root: " + git_root + "\n";
 val_prompt += "Evidence JSON:\n" + json_encode(evidence) + "\n";
 val_prompt += "Candidates JSON:\n" + json_encode(candidates) + "\n";
-val_prompt += "For each candidate done-when command, read AGENTS.md, Makefile, package.json, or scripts/verify.sh and quote the line. ";
-val_prompt += "Return commands[{command, source_file, quote, exists}] and kept_paths (max " + max_evidence.to_string() + " paths you actually opened or confirmed). ";
+val_prompt += "For each candidate done-when command, read AGENTS.md, Makefile, package.json, or scripts/verify.sh in the package whose files that candidate changes, and quote the line. ";
+val_prompt += "If that package.json has no test script, quote the repo-root AGENTS.md, Makefile, or scripts/verify.sh line that says how to test that package, and set exists=true. Do not return UNKNOWN for that package when that line exists. ";
+val_prompt += "package_root is the directory of the package the runner tests. source_file is the file you quoted. A sibling path is allowed when a kept planning doc names that sibling. ";
+val_prompt += "Return commands[{command, source_file, quote, exists, package_root}] and kept_paths (max " + max_evidence.to_string() + " paths you actually opened or confirmed). ";
 val_prompt += "Empty commands is valid ONLY after those four sources are missing or contain no runnable scripts.";
 
 let val = agent(val_prompt, #{
@@ -548,23 +781,18 @@ let val = agent(val_prompt, #{
 });
 
 let commands = [];
-let kept_paths = [];
 if val != () && val.success == true && val.output != () {
     if val.output.commands != () {
         for c in val.output.commands {
             if usable_command(c) { commands.push(c); }
         }
     }
-    if val.output.kept_paths != () {
-        kept_paths = take_n(as_array(val.output.kept_paths), max_evidence);
-    }
 } else {
     log("Validate returned unusable output; treating commands as unverified");
 }
-if kept_paths.len() == 0 {
-    for p in evidence {
-        if kept_paths.len() < max_evidence { kept_paths.push(trimmed(p.path)); }
-    }
+let kept_paths = [];
+for p in evidence {
+    if kept_paths.len() < max_evidence { kept_paths.push(trimmed(p.path)); }
 }
 log("Validate kept " + commands.len().to_string() + " existing commands, " + kept_paths.len().to_string() + " paths");
 
@@ -583,7 +811,12 @@ syn_prompt += "Kept paths JSON:\n" + json_encode(kept_paths) + "\n";
 syn_prompt += "Candidates JSON:\n" + json_encode(candidates) + "\n";
 syn_prompt += "Evidence JSON:\n" + json_encode(evidence) + "\n";
 syn_prompt += "why_now is 3-6 sentences citing kept evidence paths. rejected must be length 2. ";
-syn_prompt += "If no command exists, done_when_command must be UNKNOWN. Do not invent commands. ";
+syn_prompt += "Set done_when_command to UNKNOWN only when the opened files name no runner for the changing package. A repo-root quote that says how to test that package is a runner. Do not invent commands. ";
+syn_prompt += "The outcome names the new assertion that is still false on trunk. Do not treat a green suite as that assertion. ";
+syn_prompt += "If in_scope is a sibling repo, done_when_source must be that sibling's file, not this repo's package.json. ";
+syn_prompt += "Outcome is the production invariant in one sentence. It does not name a branch, a HEAD sha, or a submit ban. ";
+syn_prompt += "Terminal is chosen later. Do not write do-not-gt-submit into outcome, in_scope, or out_of_scope. ";
+syn_prompt += "When the outcome is one shared record, row, or store, in_scope names the required write arguments. A test that only checks a display name is not enough. ";
 syn_prompt += "Return slug, title, why_now, outcome, in_scope, out_of_scope, done_when_command, done_when_source, done_when_quote, rollback, rejected[2].";
 
 let syn = agent(syn_prompt, #{
@@ -614,25 +847,30 @@ let pack = json_encode(#{
     commands: commands,
     kept_paths: kept_paths,
     evidence: evidence,
+    branch: branch,
+    head: head,
+    dirty: dirty,
 });
 let skeptics = [
-    "Attack horizon fit. If slug is empty, pick the best week-horizon candidate via replacement_slug. Set too_short=true if the primary is a same-day copy tweak while stacked PRs, dirty mixed trees, or a product loop exist. Set real=true only if you re-opened files that support keeping this pick. Do not treat a planner stub or previous GOAL_NEXT as the pick.",
-    "Attack done-when and evidence. Set real=true only if you independently opened the cited AGENTS.md/Makefile/package.json/scripts/verify.sh line and the quote matches. If the command is invented, set real=false. If slug is empty, set real=false and name a candidate replacement_slug that has a file-backed command.",
+    "Attack horizon fit. If slug is empty, pick the best week-horizon candidate via replacement_slug. Set too_short=true if the primary is a same-day copy tweak while stacked PRs, dirty mixed trees, or a product loop exist. Set real=true only if you re-opened files that support keeping this pick. Do not treat a planner stub or previous GOAL_NEXT as the pick. Leave callee_contract empty. Set terminal to an empty string. Implementation starts from trunk (main or master, whichever ref exists), not the checked-out branch. For every claim that a write already passes its required arguments, open the trunk copy with git show <trunk>:path. Set premise_on_trunk false when that claim is false on trunk. Set premise_on_trunk true only when you opened the trunk copy and the claim holds. Leave premise_on_trunk unset when you did not check.",
+    "Attack done-when and evidence. A runner counts when you opened the quoted line and it is a real command in the changing package's AGENTS.md, Makefile, package.json, or scripts/verify.sh, or in the repo-root copy of those files when the quote says how to test that package. Set real=false if the command is UNKNOWN, invented, or the quote does not match the opened line. Set real=false if the runner does not execute or read the file the outcome changes. Set real=false if the outcome's new assertion is already true on trunk. Set real=true when the runner quote matches, the runner reaches the file the outcome changes, and you opened a current file showing that assertion is still false. A suite that stays green today is the runner, not proof the outcome already holds. Do not set real=false only because the new assertion is absent. A command in this git root does not prove a sibling-repo change. A substring or name ban is a fence. If the outcome is one shared record, row, or store, set real=false unless done-when asserts the write's required arguments and a test double that drops them would fail. Put those argument names in callee_contract. If you cannot find them, set callee_contract to UNKNOWN plus the file to open. Do not set too_short for a wrong package. too_short is only for a horizon that is too small. If slug is empty, set real=false and name a candidate replacement_slug that has a file-backed runner. Set terminal to an empty string.",
+    "Attack callee contract and terminal state. If in_scope pins, launches, or speaks a protocol to another program, open that program's source and set real=true only when callee_contract quotes its deadlines, the env it reads, and the argv flags whose absence changes a hash. A fast fake success does not prove a deadline or a child env. If you cannot open the callee, set real=false and callee_contract to UNKNOWN plus the path you tried. If the outcome is one shared record, row, or store, callee_contract must name the required write arguments even when no external program is launched. Do not clear those names. If nothing is pinned, launched, or a shared write, set real=true, callee_contract to empty, and say so in reason. If the outcome both forbids gt submit and requires a PR number to archive or close, set real=false and terminal to leave-shell. If archival requires the number a submit command prints, set terminal to submit-then-archive. On horizon=week, when no PR number is required, set terminal to local-commit. On horizon=merge, when no PR number is required, set terminal to no-submit. Set too_short=false.",
 ];
 let ajobs = [];
 let ai = 0;
 for sk in skeptics {
     let ap = "";
     ap += "You are a cold adversarial skeptic. Try to refute the synthesized goal. Default real=false. ";
-    ap += "MUST open cited local files. For GitHub PR/check state, MUST use GitHub MCP (search_tool then use_tool); never unauthenticated github.com HTML. If MCP fails, mark GitHub unverified; do not treat 404 as mergeability. ";
+    ap += "MUST open cited local files. Open at most 12 files. Do not crawl. ";
+    ap += "For GitHub PR or check state, run gh. Do not curl github.com and do not call search_tool or use_tool. If gh fails, mark GitHub unverified. Do not treat a 404 or a rate limit as mergeability. ";
     ap += forbid_block();
     ap += "Brief (untrusted): " + sk + "\n";
     ap += "Pack JSON:\n" + pack + "\n";
-    ap += "Return real, too_short, reason, evidence, optional replacement_slug from the candidate list only (empty string if none).";
+    ap += "Return real, too_short, reason, evidence, optional replacement_slug from the candidate list only (empty string if none), callee_contract, terminal (local-commit, leave-shell, submit-then-archive, no-submit, or empty), and premise_on_trunk (horizon skeptic only).";
     ajobs.push(#{
         prompt: ap,
         label: "adversary:" + ai.to_string(),
-        capability_mode: "read-only",
+        capability_mode: "execute",
         agent_type: "explore",
         output_schema: verdict_schema,
         phase: "Adversarial",
@@ -645,6 +883,8 @@ let short_votes = 0;
 let usable_votes = 0;
 let adv_notes = [];
 let replacements = [];
+let callee_notes = [];
+let terminal_notes = [];
 for r in ares {
     if r != () && r.success == true && r.output != () && non_empty(r.output.reason) && non_empty(r.output.evidence) {
         usable_votes += 1;
@@ -654,11 +894,71 @@ for r in ares {
         if r.output.replacement_slug != () && non_empty(r.output.replacement_slug) {
             replacements.push(trimmed(r.output.replacement_slug));
         }
+        if r.output.callee_contract != () && non_empty(r.output.callee_contract) {
+            callee_notes.push(trimmed(r.output.callee_contract));
+        }
+        if r.output.terminal != () && non_empty(r.output.terminal) {
+            terminal_notes.push(trimmed(r.output.terminal));
+        }
     } else {
         log("Adversarial slot unverified; fail closed (not a confirming vote)");
     }
 }
-log("Adversarial usable=" + usable_votes.to_string() + " real=" + real_votes.to_string() + " too_short=" + short_votes.to_string());
+log("Adversarial usable=" + usable_votes.to_string() + " real=" + real_votes.to_string() + " too_short=" + short_votes.to_string() + " callee_notes=" + callee_notes.len().to_string() + " terminals=" + terminal_notes.len().to_string());
+
+let rejected_slug = "";
+let proof_reason = "";
+if ares.len() > 1 && usable_verdict(ares[1]) {
+    if ares[1].output.real == false {
+        proof_reason = short_reason(ares[1].output.reason);
+        let unknown_runner = false;
+        if syn_ok == true {
+            let cited = trimmed(pick.done_when_command);
+            if cited == "" || cited == "UNKNOWN" { unknown_runner = true; }
+        }
+        if unknown_runner == true {
+            log("Proof slot real=false on UNKNOWN runner; keeping slug=" + slug + " so finalize can cite the root-doc runner");
+        } else {
+            rejected_slug = slug;
+            log("Proof slot real=false; rejecting slug=" + slug);
+        }
+    }
+}
+if ares.len() > 0 && usable_verdict(ares[0]) {
+    if ares[0].output.premise_on_trunk == false {
+        if rejected_slug == "" { rejected_slug = slug; }
+        log("Horizon premise_on_trunk=false; rejecting slug=" + slug);
+    }
+}
+if rejected_slug != "" {
+    slug = "";
+    syn_ok = false;
+}
+let surviving = [];
+for c in candidates {
+    let cs = trimmed(c.slug);
+    if cs != "" && cs != rejected_slug && slug_excluded(cs, exclude) != true {
+        surviving.push(c);
+    }
+}
+let skip_output = false;
+if rejected_slug != "" && (commands.len() == 0 || surviving.len() == 0) {
+    skip_output = true;
+    log("No replacement candidate with a usable command; not writing goals");
+}
+pack = json_encode(#{
+    slug: slug,
+    rejected_slug: rejected_slug,
+    horizon: horizon_value,
+    pick: pick,
+    candidates: surviving,
+    commands: commands,
+    kept_paths: kept_paths,
+    evidence: evidence,
+    branch: branch,
+    head: head,
+    dirty: dirty,
+});
 
 phase("Finalize");
 let goal_md = "";
@@ -666,17 +966,27 @@ let next_md = "";
 let fin_prompt = "";
 fin_prompt += "You are a cold subagent. Write the two markdown documents from the structured pick. Do not implement. ";
 fin_prompt += forbid_block();
-fin_prompt += "If synthesize slug is empty OR too_short majority on horizon=week, pick from candidates (prefer adversarial replacement_slug) that still has a file-backed done-when command. ";
-fin_prompt += "If ANY usable adversary set too_short=true, do not keep a sole already-green command as the only done-when. Expand done-when to the validated README local checks (typically npm run typecheck, npm test, npm run build:node) that exist in package.json. ";
+fin_prompt += "If synthesize slug is empty OR too_short majority on horizon=week, pick from candidates (prefer adversarial replacement_slug) that still has a file-backed done-when command in the package whose files change. ";
+fin_prompt += "A runner quoted from the repo-root AGENTS.md, Makefile, package.json, or scripts/verify.sh counts when that quote says how to test the changing package. If in-scope paths are in a sibling repo, the product gate is that sibling's test command. This repo's typecheck, test, or eval chain is a scope fence in Done when, not the only command. Do not expand done-when to this repo's package.json just because an adversary set too_short. ";
 fin_prompt += "Do not keep slug next-goal. Do not leak planner internals (schema failures, stub markdown, short_votes) into the user docs. ";
 fin_prompt += "If adversarial slots were unverified, keep the synthesize pick when it exists; otherwise pick the strongest file-backed candidate. ";
-fin_prompt += "If done-when was not file-backed, set the command to UNKNOWN. ";
+fin_prompt += "If rejected_slug is non-empty, that slug was disproved. Do not return it. Pick a different surviving candidate that has a file-backed command in the package it changes. If none qualify, return an empty slug and empty goal_md and next_md. ";
+fin_prompt += "If the synthesize command is UNKNOWN, open the repo-root AGENTS.md, Makefile, package.json, and scripts/verify.sh and use the runner those files name for the changing package. Set UNKNOWN only when none of them name a runner. The Invariant is the assertion that is still false on trunk. Done when runs that existing runner and states the assertion the runner must gain. ";
 fin_prompt += "Exactly two rejected alternatives, not more. ";
-fin_prompt += "Planner hard forbids (no commit/push during THIS workflow) must NOT be copied into the /goal implement prompt. The /goal MAY edit and commit locally. It must still say: do not /loop, do not gt submit, do not gh merge, do not expand scope. ";
-fin_prompt += "goal_md sections: Title, as-of, root, branch, dirty yes/no; Why this goal now (3-6 lines + evidence paths); Outcome (one sentence); In scope / out of scope; Done when (exact command + good output); Rollback; Budget hint: /goal for implement; companion workflow only for verify/map; Rejected alternatives (exactly 2). ";
-fin_prompt += "next_md: exactly 8 summary lines; a fenced block that starts with /goal and includes the done-when command, out-of-scope, and 'do not /loop, do not gt submit, do not expand scope'; a second fenced block of companion /create-workflow TEXT (do not invoke it). ";
+fin_prompt += "Terminal is exactly one of local-commit, submit-then-archive, leave-shell, no-submit. ";
+fin_prompt += "If terminal_notes contain leave-shell, write a heading '## Terminal' with the line 'Terminal: leave-shell' and the sentence 'this session does not submit' only under that heading. ";
+fin_prompt += "If terminal_notes contain submit-then-archive, write 'Terminal: submit-then-archive' under '## Terminal'. The /goal block may gt submit after the gates and must archive using the PR number that command prints. Do not also write a submit ban. ";
+fin_prompt += "If terminal_notes contain local-commit, or terminal_notes are empty on horizon=week, write 'Terminal: local-commit' under '## Terminal'. The implementer may commit locally. Do not gt submit unless a later user message says submit. Write that once under Terminal. ";
+fin_prompt += "If terminal_notes contain no-submit and do not contain local-commit, write 'Terminal: no-submit' under '## Terminal' and the submit ban only there. ";
+fin_prompt += "Do not write 'do not gt submit' in the summary lines, Outcome, Invariant, In scope, Out of scope, Done when, or the companion block. ";
+fin_prompt += "Planner hard forbids (no commit/push during THIS workflow) must NOT be copied into the /goal implement prompt. The /goal MAY edit and commit locally. It must say: do not /loop, do not gh merge, do not expand scope. ";
+fin_prompt += "If the change pins, launches, or speaks a protocol to another program, or callee_notes name required write arguments, goal_md must include a Callee contract section. Copy deadlines, env vars, argv flags, and required write arguments from callee_notes. If a note is UNKNOWN, write UNKNOWN and name the file the implementer must open. A fast fake success does not prove a deadline, a child env, or a dropped keyword argument. Omit Callee contract only when no note names a callee or a required write argument. ";
+fin_prompt += "goal_md sections, in order: Title; '## As-of (not acceptance)' with root, branch, HEAD, and dirty yes/no inside a fence; Why this goal now (3-6 lines plus evidence paths); '## Invariant' (one sentence, the production row or behavior, including required write arguments when the goal is one shared record); In scope; Out of scope; Callee contract when required; Done when (product command in the changing package, good output, scope-fence command, venv PATH, brace-group log, HEAD as the first log line, full suite once per product commit); '## Terminal'; Rollback; Budget hint; Rejected alternatives (exactly 2). ";
+fin_prompt += "The as-of fence is not acceptance. Later steps must not treat that branch or HEAD as the current tree. ";
+fin_prompt += "Budget hint: /goal implements. The companion re-runs the done-when commands against HEAD. It does not remap the pre-change call sites as the current tree. A finding counts only when the quoted line is still in HEAD. A plan box is [x] only when the gate log's HEAD line equals git rev-parse HEAD. After compaction, the next step is the first unchecked box, or a narrow re-run when HEAD moved. ";
+fin_prompt += "next_md: exactly 8 summary lines that do not treat the as-of branch as the spec; a fenced block that starts with /goal and includes the invariant, the product done-when command, the callee-contract constants or UNKNOWN, the one Terminal line, out-of-scope, the HEAD-quote rule, the checkbox rule, the suite-once rule, and 'do not /loop, do not gh merge, do not expand scope'; a second fenced block of companion /create-workflow TEXT (do not invoke it). The companion verifies HEAD and discards a finding whose quote is absent from HEAD. It does not map the pre-change tree as current. When a callee or required write arguments exist, it opens that source before implement. ";
 fin_prompt += "Companion name must be goal-<slug>, suffix -exec if it equals repo-map, workspace-map, host-map, tech-debt-scan, or goal-planning. ";
-fin_prompt += "/goal fenced block max " + MAX_GOAL_WORDS.to_string() + " words. ";
+fin_prompt += "/goal fenced block max " + MAX_GOAL_WORDS.to_string() + " words. Keep it short. When a callee exists, keep the quoted constants inside that cap and cut narrative first. ";
 fin_prompt += "goal_rel must be docs/goals/YYYY-MM-DD-<kebab-slug>.md using as_of " + as_of + ". next_rel must be docs/goals/GOAL_NEXT.md. ";
 fin_prompt += "Pack JSON:\n" + pack + "\n";
 fin_prompt += "Adversarial notes JSON:\n" + json_encode(#{
@@ -685,16 +995,25 @@ fin_prompt += "Adversarial notes JSON:\n" + json_encode(#{
     short_votes: short_votes,
     notes: adv_notes,
     replacements: replacements,
+    callee_notes: callee_notes,
+    terminal_notes: terminal_notes,
     horizon: horizon_value,
+    rejected_slug: rejected_slug,
+    proof_reason: proof_reason,
 }) + "\n";
 fin_prompt += "Return slug, companion_name, goal_md, next_md, goal_rel, next_rel.";
 
-let fin = agent(fin_prompt, #{
-    label: "finalize:docs",
-    capability_mode: "read-only",
-    agent_type: "plan",
-    output_schema: finalize_schema,
-});
+let fin = ();
+if skip_output != true {
+    fin = agent(fin_prompt, #{
+        label: "finalize:docs",
+        capability_mode: "read-only",
+        agent_type: "plan",
+        output_schema: finalize_schema,
+    });
+} else {
+    log("Skipping finalize because the rejected slug has no file-backed replacement");
+}
 
 let companion = companion_name_for(slug);
 let goal_rel = "docs/goals/" + as_of + "-" + slug + ".md";
@@ -709,8 +1028,27 @@ if fin != () && fin.success == true && fin.output != () {
     if non_empty(fin.output.next_md) { next_md = trimmed(fin.output.next_md); }
     if non_empty(fin.output.goal_rel) { goal_rel = trimmed(fin.output.goal_rel); }
     if non_empty(fin.output.next_rel) { next_rel = trimmed(fin.output.next_rel); }
-} else {
+} else if skip_output != true {
     log("Finalize unusable; scratch docs will be empty");
+}
+if rejected_slug != "" && (slug == "" || slug == rejected_slug) {
+    if slug == rejected_slug { log("Finalize returned rejected slug; discarding"); }
+    slug = "";
+    goal_md = "";
+    next_md = "";
+    skip_output = true;
+    log("Rejected slug was not replaced; not writing goals");
+}
+if non_empty(goal_md) {
+    if contains_str(goal_md, "As-of (not acceptance)") != true {
+        log("Finalize goal_md missing As-of (not acceptance)");
+    }
+    if contains_str(goal_md, "## Invariant") != true {
+        log("Finalize goal_md missing Invariant");
+    }
+    if contains_str(goal_md, "Terminal:") != true {
+        log("Finalize goal_md missing Terminal");
+    }
 }
 if companion == "goal-planning" || companion == "repo-map" || companion == "workspace-map" || companion == "host-map" || companion == "tech-debt-scan" {
     companion = companion + "-exec";
@@ -729,6 +1067,14 @@ if docs_goals_rel_ok(next_rel) != true {
 write_scratch_file("goal.md", goal_md);
 let scratch_next = write_scratch_file("GOAL_NEXT.md", next_md);
 
+let wrote = false;
+let goal_path = goal_rel;
+let next_path = next_rel;
+let extra = [];
+let write_denied = false;
+let have_explicit = false;
+let out = ();
+if skip_output != true {
 phase("Output");
 let out_prompt = "";
 out_prompt += "You are a cold subagent. Your assigned deliverable is to write EXACTLY two markdown files under the git root. ";
@@ -745,18 +1091,12 @@ out_prompt += "If a path is outside docs/goals/, refuse that write. ";
 out_prompt += "Bodies JSON:\n" + json_encode(#{ goal_md: goal_md, next_md: next_md, companion: companion }) + "\n";
 out_prompt += "Return wrote_goal, wrote_next, goal_path, next_path, extra_writes (must be empty).";
 
-let out = agent(out_prompt, #{
+out = agent(out_prompt, #{
     label: "output:write",
     capability_mode: "all",
     output_schema: output_schema,
 });
 
-let wrote = false;
-let goal_path = goal_rel;
-let next_path = next_rel;
-let extra = [];
-let write_denied = false;
-let have_explicit = false;
 if out != () && out.success == true && out.output != () {
     if out.output.wrote_goal == true && out.output.wrote_next == true { wrote = true; }
     if out.output.wrote_goal == true || out.output.wrote_goal == false { have_explicit = true; }
@@ -794,10 +1134,15 @@ if wrote != true {
         if verified == true { wrote = true; }
     }
 }
+} else {
+    log("Not writing docs/goals after rejected slug=" + rejected_slug);
+}
 
 let wrote_label = "false";
 if wrote == true { wrote_label = "true"; }
 let summary = "Planned slug=" + slug + " horizon=" + horizon_value + " wrote=" + wrote_label;
+if rejected_slug != "" { summary += " rejected=" + rejected_slug; }
+if proof_reason != "" { summary += " proof=" + proof_reason; }
 log(summary);
 complete(#{
     summary: summary,
