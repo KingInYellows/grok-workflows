@@ -284,6 +284,7 @@ fn copy_ticket(t) {
         parent_branch: map_str(t, "parent_branch"),
         parent_id: map_str(t, "parent_id"),
         files: copy_strings(map_get(t, "files")),
+        tests: copy_strings(map_get(t, "tests")),
         evidence: map_str(t, "evidence"),
         context_ok: map_bool(t, "context_ok", false),
         test_command: map_str(t, "test_command"),
@@ -457,6 +458,7 @@ fn skeptic_packet(tickets, plan_out) {
         let row = #{
             identifier: id,
             files: copy_strings(map_get(ticket, "files")),
+            tests: copy_strings(map_get(ticket, "tests")),
             evidence: map_str(ticket, "evidence"),
             test_file: "",
             test_command: "",
@@ -777,6 +779,8 @@ fn self_check() {
     if !branch_steps.contains("git switch -c") { return "switch create"; }
     if !branch_steps.contains("gt track --parent") { return "track parent"; }
     if !guardrails_text().contains("Do not gt track") { return "track guard"; }
+    if !ff_prompt("main").contains("git merge --ff-only") { return "ff only"; }
+    if !dirty_prompt().contains("--untracked-files=no") { return "untracked dirty"; }
     if proven_red(#{ stub: true, red_proven: true, failure_excerpt: "x", test_command: "go" }, "go") {
         return "canned red";
     }
@@ -792,7 +796,12 @@ fn self_check() {
     ]);
     if map_str(ranked[0], "identifier") != "FIRST" { return "priority sort"; }
     let packet = skeptic_packet(
-        [#{ identifier: "HI", files: ["backend/src/x.ts"], evidence: "backend/src/x.ts" }],
+        [#{
+            identifier: "HI",
+            files: ["backend/src/x.ts"],
+            tests: ["backend/src/middleware/validation-wrap.test.ts"],
+            evidence: "backend/src/x.ts",
+        }],
         #{ plans: [#{
             identifier: "HI",
             test_file: "shared/src/types/dto-contracts.test.ts",
@@ -803,8 +812,10 @@ fn self_check() {
     );
     let encoded = json_encode(packet);
     if !encoded.contains("backend/src/x.ts") { return "skeptic files"; }
+    if !encoded.contains("validation-wrap.test.ts") { return "skeptic tests"; }
     if !encoded.contains("dto-contracts.test.ts") { return "skeptic command"; }
     if !skeptic_prompt("[]").contains("package-relative") { return "skeptic rule"; }
+    if !skeptic_prompt("[]").contains("parent directory") { return "barrel rule"; }
     if !collect_prompt("", "", 40).contains("head_behind") { return "behind field"; }
     let planned = take_plans(
         [#{ identifier: "HI" }],
@@ -941,6 +952,7 @@ fn plan_prompt(tickets) {
             parent_branch: map_str(ticket, "parent_branch"),
             parent_id: map_str(ticket, "parent_id"),
             files: map_get(ticket, "files"),
+            tests: map_get(ticket, "tests"),
             evidence: map_str(ticket, "evidence"),
         });
     }
@@ -949,7 +961,7 @@ fn plan_prompt(tickets) {
     p += tools_read();
     p += "Read AGENTS.md with read_file and choose the narrowest test command that runs the new test. Copy a command from AGENTS.md when it matches the package.\n";
     p += "For every ticket return one plan with identifier, summary, commit_type (feat, fix, refactor, test, or chore), test_command, test_file, and production_files.\n";
-    p += "production_files are every file the fix will create or edit except test_file. Include a new module when it sits in the same directory as a file already in the ticket's files list. Include every other test the summary rewrites. Listing only a barrel does not cover a new sibling module or another barrel such as shared/src/index.ts. Do not put test_file itself in production_files.\n";
+    p += "production_files are every file the fix will create or edit except test_file. Include a new module when it sits in the same directory as a file already in the ticket's files or tests list. Include every test from that tests list which the summary rewrites. An index.ts in a parent directory of a listed file may be included, as may shared/src/client/index.ts when a shared/src file is listed. Do not put test_file itself in production_files.\n";
     p += "Every production file must start with the same first directory as test_file. A test under scripts/ may also change docker/, docker-scripts/, or config/. Do not pair a backend, frontend, or shared test with a file from a different one of those three.\n";
     p += "Open an existing test before you name it. Use it only when it imports the module you will change. Otherwise name a new test file in that module's directory. A test of config.service does not prove a change to config/index.ts.\n";
     p += "When the plan deletes a module, the summary must name every test that imports it and say those tests are deleted or rewritten in this change.\n";
@@ -963,9 +975,9 @@ fn skeptic_prompt(plan_json) {
     p += guardrails_text();
     p += tools_read();
     p += "For every plan identifier, return one verdict with identifier, accept, and evidence.\n";
-    p += "Set accept true only when test_command is non-empty, test_file is a relative path, production_files is non-empty, and every production file appears in that ticket's files list, its evidence, or is a new file in the same directory as one of those files. Otherwise accept false.\n";
+    p += "Set accept true only when test_command is non-empty, test_file is a relative path, production_files is non-empty, and every production file is in files or tests, or is a new file in the same directory as one of those, or is an index.ts in a parent directory of one of those, or is shared/src/client/index.ts when a shared/src file is listed. Otherwise accept false.\n";
     p += "Reject when the summary creates or edits a repo path that is not test_file and not in production_files. A path the summary says not to edit does not count.\n";
-    p += "The packet includes each ticket's files list. A path in that list is in scope even when the summary uses a shorter name.\n";
+    p += "The packet includes files and tests. A path in either list is in scope even when the summary uses a shorter name.\n";
     p += "A test_command may use a package-relative path. Accept it when test_file is the repo-relative path of that same test. src/types/dto-contracts.test.ts is the same test as shared/src/types/dto-contracts.test.ts when the command runs inside the shared package.\n";
     p += "Reject when a production file's first directory differs from test_file's first directory. A scripts/ test may cover docker/, docker-scripts/, and config/. A backend, frontend, or shared test may not cover a different one of those three.\n";
     p += "When test_file already exists, open it. Accept it when it imports any production file, including a route that calls the middleware being changed. Reject it when it imports none of the production files. A test that only imports config.service does not cover config/index.ts.\n";
@@ -977,11 +989,24 @@ fn skeptic_prompt(plan_json) {
     p
 }
 
+fn ff_prompt(trunk_name) {
+    let p = "You fast-forward the current branch onto origin/TRUNK only when that is a pure fast-forward. Do not edit files. Do not commit. Do not rebase. Do not reset. Do not checkout another branch.\n";
+    p += guardrails_text();
+    p += tools_exec();
+    p += "TRUNK is in the packet.\n";
+    p += "1. Run git rev-parse --abbrev-ref HEAD. When it is not TRUNK, set fast_forwarded false, behind to -1, and reason to not on trunk. Stop.\n";
+    p += "2. Run git rev-list --count origin/TRUNK..HEAD. When that count is not 0, set fast_forwarded false, behind to -1, and reason to diverged. Stop.\n";
+    p += "3. Run git status --porcelain --untracked-files=no. When it is not empty, set fast_forwarded false, behind to -1, and reason to tracked changes. Stop.\n";
+    p += "4. Run git merge --ff-only origin/TRUNK. Then run git rev-list --count HEAD..origin/TRUNK. Set behind to that count. Set fast_forwarded true only when behind is 0. When the merge fails, set fast_forwarded false and put the error in reason.\n";
+    p += packet_line(#{ trunk: trunk_name });
+    p
+}
+
 fn dirty_prompt() {
     let p = "You check whether the git worktree is clean. Do not edit, commit, or submit.\n";
     p += guardrails_text();
     p += tools_exec();
-    p += "Run git status --porcelain. When the output is empty, set clean true and evidence to the exact word clean. When it is not empty, set clean false and put the porcelain text in evidence. When the command fails, set clean false.\n";
+    p += "Run git status --porcelain --untracked-files=no. When the output is empty, set clean true and evidence to the exact word clean. When it is not empty, set clean false and put the porcelain text in evidence. Untracked files do not make the tree dirty. When the command fails, set clean false.\n";
     p
 }
 
@@ -991,7 +1016,7 @@ fn test_prompt(ticket, started_state) {
     p += tools_exec();
     p += tools_linear();
     p += "Steps:\n";
-    p += "1. If git status --porcelain is not empty, set red_proven false and stop.\n";
+    p += "1. If git status --porcelain --untracked-files=no is not empty, set red_proven false and stop. Untracked files do not count.\n";
     p += "2. Create or check out branch_name. Do not commit.\n";
     p += "If branch_name already exists, check it out with gt --no-interactive checkout. When that fails because the current branch is untracked, git switch branch_name. Do not recreate it.\n";
     p += "Otherwise run gt trunk --no-interactive. The current branch is untracked when that command reports an untracked branch. An untracked branch is the worktree name, not a stack parent. Do not gt track it. Do not gt branch create or gt create from it.\n";
@@ -1315,6 +1340,17 @@ let verdicts_schema = #{
     },
 };
 
+let ff_schema = #{
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["fast_forwarded", "behind", "reason"],
+    "properties": #{
+        "fast_forwarded": #{ "type": "boolean" },
+        "behind": #{ "type": "integer" },
+        "reason": #{ "type": "string" },
+    },
+};
+
 let dirty_schema = #{
     "type": "object",
     "additionalProperties": false,
@@ -1522,8 +1558,19 @@ if !safe_branch(trunk) {
     pause("verification", "Graphite trunk was not a branch name.");
 }
 let behind = as_int(map_get(select_out, "head_behind"), -1, -1, 1000000);
+if behind > 0 {
+    let ff_r = agent(
+        ff_prompt(trunk),
+        #{ label: "fast-forward", capability_mode: "execute", output_schema: ff_schema }
+    );
+    let ff = agent_map(ff_r);
+    if ff != () && map_bool(ff, "fast_forwarded", false) && map_int(ff, "behind") == 0 {
+        behind = 0;
+        log("fast-forwarded " + trunk + " to origin/" + trunk);
+    }
+}
 if behind != 0 {
-    let why = "HEAD is behind origin/" + trunk + " by " + behind.to_string() + " commit(s). Fast-forward the worktree and start a new run. Resume stops here again.";
+    let why = "HEAD is behind origin/" + trunk + " by " + behind.to_string() + " commit(s) and is not a clean fast-forward of " + trunk + ". Start a new run from updated " + trunk + ". Resume stops here again.";
     if behind < 0 {
         why = "Could not count commits on origin/" + trunk + ". Fetch origin and start a new run. Resume stops here again.";
     }
@@ -1600,6 +1647,10 @@ for ticket in tickets {
         files = cleaned.paths;
         if cleaned.dropped > 0 { log(id + ": dropped " + cleaned.dropped.to_string() + " context paths"); }
     }
+    let tests = [];
+    if ctx != () && map_str(ctx, "identifier") == id {
+        tests = clean_paths(map_get(ctx, "tests"), 8).paths;
+    }
     if evidence == "" || files.len() == 0 {
         context_drops.push(id + ": no code evidence");
         log(id + ": dropped, no code evidence");
@@ -1607,6 +1658,7 @@ for ticket in tickets {
         let next = copy_ticket(ticket);
         next.context_ok = true;
         next.files = files;
+        next.tests = tests;
         next.evidence = clip(evidence, 800);
         with_context.push(next);
     }
@@ -1643,18 +1695,11 @@ if tickets.len() == 0 {
 let rows = rows_for(tickets);
 phase("Gate");
 if !apply {
-    let gate = "Resume to build these tickets. A new run with apply true skips this gate.\n";
-    for ticket in tickets {
-        gate += map_str(ticket, "identifier");
-        gate += " branch ";
-        gate += map_str(ticket, "branch_name");
-        gate += " parent ";
-        gate += map_str(ticket, "parent_branch");
-        gate += " test ";
-        gate += map_str(ticket, "test_command");
-        gate += "\n";
-    }
-    await_user("user", gate);
+    phase("Report");
+    let report = report_md(header_for(apply, team_label, cycle_label, trunk, drops), rows);
+    report += "\nApply is off, so this run stops with the plan and does not build.\n";
+    report += "Start a new run with {\"apply\":true} to build these tickets.\n";
+    finish(report, rows);
 }
 
 phase("Build");

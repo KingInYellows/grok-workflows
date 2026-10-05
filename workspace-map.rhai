@@ -1,89 +1,80 @@
 let meta = #{
     name: "workspace-map",
-    description: "Read-only map of git roots, stacks, and verified commands in a multi-repo workspace",
-    when_to_use: "Before starting work in a multi-repo workspace: discover git roots and worktrees, then report stack, verified commands, dirtiness, and a first-touch file.",
+    description: "Read-only map of a multi-repo workspace: git roots, stack, real commands, kind, and the smallest safe first touch",
+    when_to_use: "Map a multi-repo workspace before changing anything. Discover git roots and worktrees, report stack and file-backed commands, and name one safe first touch per repo.",
     phases: [
-        #{ title: "Discover", detail: "find git roots and worktrees under args.root" },
-        #{ title: "Map", detail: "one inspector per root" },
-        #{ title: "Verify", detail: "prove each command name against AGENTS.md or Makefile" },
+        #{ title: "Discover", detail: "git roots, immediate children, and worktrees" },
+        #{ title: "Map", detail: "one read-only mapper per root" },
+        #{ title: "Verify", detail: "commands and cited files must exist" },
         #{ title: "Report", detail: "one table plus an 8-line summary" },
     ],
 };
 
-let discover_schema = #{
-    "type": "object",
-    "required": ["roots"],
+const HARD_CAP = 12;
+
+let roots_schema = #{
+    "type": "object", "required": ["roots"],
     "properties": #{
-        "roots": #{
-            "type": "array",
-            "maxItems": 24,
-            "items": #{
-                "type": "object",
-                "required": ["path", "source"],
-                "properties": #{
-                    "path": #{ "type": "string" },
-                    "source": #{ "type": "string" },
-                },
+        "roots": #{ "type": "array", "maxItems": 24, "items": #{
+            "type": "object", "required": ["path", "relpath", "source"],
+            "properties": #{
+                "path": #{ "type": "string" },
+                "relpath": #{ "type": "string" },
+                "source": #{ "type": "string" },
             },
-        },
+        }},
     },
 };
 
 let repo_schema = #{
     "type": "object",
     "required": [
-        "path", "origin", "branch", "dirty", "ahead_behind", "stack",
-        "test_cmd", "lint_cmd", "typecheck_cmd", "verify_cmd", "kind", "first_touch",
+        "path", "origin", "branch", "dirty", "ahead_behind",
+        "language", "package_manager", "lockfiles",
+        "test_command", "lint_command", "typecheck_command", "verify_command",
+        "kind", "kind_evidence_file",
+        "smallest_safe_change", "smallest_safe_file",
     ],
     "properties": #{
         "path": #{ "type": "string" },
         "origin": #{ "type": "string" },
         "branch": #{ "type": "string" },
-        "dirty": #{ "type": "boolean" },
+        "dirty": #{ "type": "string" },
         "ahead_behind": #{ "type": "string" },
-        "stack": #{ "type": "string" },
-        "test_cmd": #{ "type": "string" },
-        "lint_cmd": #{ "type": "string" },
-        "typecheck_cmd": #{ "type": "string" },
-        "verify_cmd": #{ "type": "string" },
+        "language": #{ "type": "string" },
+        "package_manager": #{ "type": "string" },
+        "lockfiles": #{ "type": "array", "maxItems": 8, "items": #{ "type": "string" } },
+        "test_command": #{ "type": "string" },
+        "lint_command": #{ "type": "string" },
+        "typecheck_command": #{ "type": "string" },
+        "verify_command": #{ "type": "string" },
+        "command_source_file": #{ "type": "string" },
         "kind": #{ "type": "string" },
-        "first_touch": #{ "type": "string" },
-        "test_cmd_file": #{ "type": "string" },
-        "lint_cmd_file": #{ "type": "string" },
-        "typecheck_cmd_file": #{ "type": "string" },
-        "verify_cmd_file": #{ "type": "string" },
-        "first_touch_file": #{ "type": "string" },
-        "source": #{ "type": "string" },
+        "kind_evidence_file": #{ "type": "string" },
+        "smallest_safe_change": #{ "type": "string" },
+        "smallest_safe_file": #{ "type": "string" },
     },
 };
 
 let verdict_schema = #{
     "type": "object",
-    "required": ["path", "test_ok", "lint_ok", "typecheck_ok", "verify_ok", "first_touch_ok", "evidence"],
+    "required": [
+        "inspected", "evidence",
+        "test_command", "lint_command", "typecheck_command", "verify_command",
+        "kind_ok", "smallest_ok", "lockfiles_ok",
+    ],
     "properties": #{
-        "path": #{ "type": "string" },
-        "test_ok": #{ "type": "boolean" },
-        "lint_ok": #{ "type": "boolean" },
-        "typecheck_ok": #{ "type": "boolean" },
-        "verify_ok": #{ "type": "boolean" },
-        "first_touch_ok": #{ "type": "boolean" },
+        "inspected": #{ "type": "boolean" },
         "evidence": #{ "type": "string" },
+        "test_command": #{ "type": "string" },
+        "lint_command": #{ "type": "string" },
+        "typecheck_command": #{ "type": "string" },
+        "verify_command": #{ "type": "string" },
+        "kind_ok": #{ "type": "boolean" },
+        "smallest_ok": #{ "type": "boolean" },
+        "lockfiles_ok": #{ "type": "boolean" },
     },
 };
-
-fn max_root_cap() { 12 }
-
-fn as_str(x) {
-    if x == () { return ""; }
-    let t = type_of(x);
-    if t == "string" { return x; }
-    if t == "i64" || t == "f64" { return x.to_string(); }
-    if t == "bool" {
-        if x { return "true"; }
-        return "false";
-    }
-    ""
-}
 
 fn trimmed(s) {
     if type_of(s) != "string" { return ""; }
@@ -91,629 +82,696 @@ fn trimmed(s) {
     s
 }
 
-fn normalize_dir(p) {
-    let s = trimmed(p);
-    while s.len() > 1 && s.sub_string(s.len() - 1, 1) == "/" {
+fn as_string(x) {
+    if type_of(x) == "string" { trimmed(x) } else { "" }
+}
+
+fn is_map(x) {
+    x != () && type_of(x) == "map"
+}
+
+fn as_array(x) {
+    if x != () && type_of(x) == "array" { x } else { [] }
+}
+
+fn ends_with(s, suffix) {
+    let a = as_string(s);
+    let b = as_string(suffix);
+    if b == "" { return true; }
+    if a.len() < b.len() { return false; }
+    a.sub_string(a.len() - b.len(), b.len()) == b
+}
+
+fn strip_dot_slash(p) {
+    let s = as_string(p);
+    if s.len() >= 2 && s.sub_string(0, 2) == "./" {
+        return s.sub_string(2, s.len() - 2);
+    }
+    s
+}
+
+fn strip_trailing_slash(p) {
+    let s = as_string(p);
+    while s.len() > 1 && ends_with(s, "/") {
         s = s.sub_string(0, s.len() - 1);
     }
     s
 }
 
-fn basename_of(p) {
-    let s = trimmed(p);
-    let last = 0;
+fn norm_path(p) {
+    strip_trailing_slash(strip_dot_slash(p))
+}
+
+fn has_dotdot(s) {
+    let p = as_string(s);
+    if p == ".." { return true; }
+    if p.len() >= 3 && p.sub_string(0, 3) == "../" { return true; }
+    if p.len() >= 3 && ends_with(p, "/..") { return true; }
     let i = 0;
-    while i < s.len() {
-        if s.sub_string(i, 1) == "/" { last = i + 1; }
+    while i + 4 <= p.len() {
+        if p.sub_string(i, 4) == "/../" { return true; }
         i += 1;
     }
-    s.sub_string(last, s.len() - last)
+    false
 }
 
-fn path_under_root(p, root) {
-    let a = normalize_dir(p);
-    let b = normalize_dir(root);
-    if a == "" || b == "" { return false; }
-    if a == b { return true; }
-    let prefix = b + "/";
-    if a.len() < prefix.len() { return false; }
-    a.sub_string(0, prefix.len()) == prefix
-}
-
-fn is_immediate_child_path(p, root) {
-    let a = normalize_dir(p);
-    let b = normalize_dir(root);
-    if a == b || a == "" || b == "" { return false; }
-    if !path_under_root(a, b) { return false; }
-    let rest = a.sub_string(b.len() + 1, a.len() - b.len() - 1);
-    if rest.len() == 0 { return false; }
-    let i = 0;
-    while i < rest.len() {
-        if rest.sub_string(i, 1) == "/" { return false; }
-        i += 1;
-    }
-    true
-}
-
-fn has_skipped_segment(p) {
-    let s = trimmed(p);
+fn forbidden_path(p) {
+    let s = norm_path(p);
     if s == "" { return true; }
-    let i = 0;
-    let n = s.len();
-    let seg_start = 0;
-    while i <= n {
-        if i == n || s.sub_string(i, 1) == "/" {
-            let seglen = i - seg_start;
-            if seglen > 0 {
-                let seg = s.sub_string(seg_start, seglen);
-                if seg == "node_modules" || seg == ".git" || seg == ".terraform" || seg == ".." {
-                    return true;
-                }
-            }
-            seg_start = i + 1;
-        }
-        i += 1;
+    if has_dotdot(s) { return true; }
+    if s == "node_modules" || s == ".git" || s == ".terraform" { return true; }
+    if s.contains("/node_modules/") { return true; }
+    if ends_with(s, "/node_modules") { return true; }
+    if s.contains("/.terraform/") { return true; }
+    if ends_with(s, "/.terraform") { return true; }
+    if s.contains("/.git/") { return true; }
+    if ends_with(s, "/.git") { return true; }
+    false
+}
+
+fn already_seen(keys, k) {
+    for x in keys {
+        if x == k { return true; }
     }
     false
 }
 
-fn classify_source(s) {
-    let x = trimmed(s);
-    if x == "cwd" || x == "root" { return "cwd"; }
-    if x == "child" || x == "immediate" { return "child"; }
-    if x == "worktree" || x == "wt" { return "worktree"; }
-    "other"
+fn last_index_of(s, needle) {
+    let n = as_string(s);
+    let k = as_string(needle);
+    if k == "" { return -1; }
+    let found = -1;
+    let i = 0;
+    while i + k.len() <= n.len() {
+        if n.sub_string(i, k.len()) == k { found = i; }
+        i += 1;
+    }
+    found
 }
 
-fn already_have(paths, p) {
-    let needle = normalize_dir(p);
-    for x in paths {
-        if normalize_dir(x) == needle { return true; }
+fn last_segment(p) {
+    let s = norm_path(p);
+    let slash = last_index_of(s, "/");
+    if slash < 0 { return s; }
+    if slash + 1 >= s.len() { return s; }
+    s.sub_string(slash + 1, s.len() - slash - 1)
+}
+
+fn drop_last_segment(p) {
+    let s = norm_path(p);
+    let slash = last_index_of(s, "/");
+    if slash <= 0 { return ""; }
+    s.sub_string(0, slash)
+}
+
+fn is_single_segment(p) {
+    let s = norm_path(p);
+    if s == "" || s == "." || s == ".." { return false; }
+    !s.contains("/")
+}
+
+fn display_path(path, relpath) {
+    let rel = norm_path(relpath);
+    if rel != "" && rel != "." { return rel; }
+    let p = norm_path(path);
+    if p == "" { return "."; }
+    p
+}
+
+fn short_origin(url) {
+    let s = as_string(url);
+    if s == "" || s == "unknown" || s == "UNKNOWN" { return "unknown"; }
+    let colon = last_index_of(s, ":");
+    if colon >= 0 {
+        let after = s.sub_string(colon + 1, s.len() - colon - 1);
+        if after.contains("/") && colon > 6 {
+            return after;
+        }
     }
+    let a = last_segment(s);
+    let parent = last_segment(drop_last_segment(s));
+    if parent == "" || parent == "github.com" || parent == "www.github.com" { return a; }
+    parent + "/" + a
+}
+
+fn norm_dirty(x) {
+    let s = as_string(x);
+    if s == "dirty" || s == "clean" || s == "unknown" { return s; }
+    if s == "" { return "unknown"; }
+    s
+}
+
+fn norm_ahead(x) {
+    let s = as_string(x);
+    if s == "" { return "unknown"; }
+    if s == "even" { return "even"; }
+    if s == "ahead 0, behind 0" { return "even"; }
+    if s == "ahead 0 behind 0" { return "even"; }
+    if s == "0 0" { return "even"; }
+    if s == "0\t0" { return "even"; }
+    s
+}
+
+fn cmd_or_unknown(x) {
+    let s = as_string(x);
+    if s == "" { return "UNKNOWN"; }
+    s
+}
+
+fn allowed_lockfile(name) {
+    let n = as_string(name);
+    if n == "" { return false; }
+    if has_dotdot(n) { return false; }
+    if n.contains("/") { return false; }
+    if n == "pnpm-lock.yaml" { return true; }
+    if n == "package-lock.json" { return true; }
+    if n == "go.mod" { return true; }
+    if n == "Cargo.toml" { return true; }
+    if n == "Pipfile" { return true; }
+    if n == "Pipfile.lock" { return true; }
+    if n == "pyproject.toml" { return true; }
+    if n == "poetry.lock" { return true; }
+    if n == "requirements.txt" { return true; }
+    if n.len() >= 15 && n.sub_string(0, 12) == "requirements" && ends_with(n, ".txt") { return true; }
     false
 }
 
-fn allowed_cmd_file(f) {
-    let b = basename_of(f);
-    b == "AGENTS.md" || b == "Makefile" || b == "makefile"
-}
-
-fn clip(s, n) {
-    let t = sanitize_cell(s);
-    if t.len() <= n { return t; }
-    return t.sub_string(0, n) + "...";
-}
-
-fn sanitize_cell(s) {
-    let t = as_str(s);
-    t.trim();
+fn join_names(items) {
     let out = "";
-    let i = 0;
-    while i < t.len() {
-        let ch = t.sub_string(i, 1);
-        if ch == "|" || ch == "\n" || ch == "\r" || ch == "`" {
-            out += " ";
-        } else {
-            out += ch;
+    for item in items {
+        if out != "" { out += ", "; }
+        out += "`" + item + "`";
+    }
+    if out == "" { return "(none)"; }
+    out
+}
+
+fn clamp_max_repos(raw, fallback, hi) {
+    let n = fallback;
+    if raw == () { return n; }
+    let t = type_of(raw);
+    if t == "i64" || t == "i32" || t == "int" || t == "u64" {
+        n = raw;
+    }
+    if n < 1 { n = 1; }
+    if n > hi { n = hi; }
+    n
+}
+
+fn is_self_root(relpath, path, root) {
+    let rel = norm_path(relpath);
+    let p = norm_path(path);
+    let r = norm_path(root);
+    if rel == "." { return true; }
+    if p == r { return true; }
+    if (r == "." || r == "") && (p == "." || p == "") { return true; }
+    false
+}
+
+fn take_bucket(bucket, roots, seen, max_repos, dropped_dup, dropped_cap) {
+    for rec in bucket {
+        if roots.len() >= max_repos {
+            dropped_cap += 1;
+            continue;
         }
-        i += 1;
+        let keys = [rec.path];
+        if rec.relpath != "" && rec.relpath != "." {
+            keys.push("rel:" + rec.relpath);
+        }
+        let dup = false;
+        for k in keys {
+            if already_seen(seen, k) { dup = true; }
+        }
+        if dup {
+            dropped_dup += 1;
+            continue;
+        }
+        for k in keys { seen.push(k); }
+        roots.push(rec);
     }
-    if out == "" { return "UNKNOWN"; }
-    out
+    #{ roots: roots, seen: seen, dropped_dup: dropped_dup, dropped_cap: dropped_cap }
 }
 
-fn rel_path(p, root) {
-    let a = normalize_dir(p);
-    let b = normalize_dir(root);
-    if a == b { return "."; }
-    let prefix = b + "/";
-    if a.len() >= prefix.len() && a.sub_string(0, prefix.len()) == prefix {
-        return a.sub_string(prefix.len(), a.len() - prefix.len());
+let root = ".";
+let max_repos = HARD_CAP;
+if args != () {
+    if args.root != () && type_of(args.root) == "string" {
+        root = args.root;
+        root.trim();
+        if root == "" { root = "."; }
     }
-    a
-}
-
-fn kind_label(k) {
-    let s = trimmed(k);
-    if s == "app" || s == "docs" { return s; }
-    if s == "IAC" || s == "iac" { return "IAC"; }
-    "unknown"
-}
-
-fn dirty_label(d) {
-    if d == true { return "dirty"; }
-    if d == false { return "clean"; }
-    "unknown"
-}
-
-fn join_list(arr) {
-    if arr.len() == 0 { return "none"; }
-    let out = "";
-    let i = 0;
-    for x in arr {
-        if i > 0 { out += ", "; }
-        out += as_str(x);
-        i += 1;
+    if args.max_repos != () {
+        max_repos = clamp_max_repos(args.max_repos, HARD_CAP, HARD_CAP);
     }
-    out
 }
+if max_repos < 1 { max_repos = 1; }
+if max_repos > HARD_CAP { max_repos = HARD_CAP; }
 
-fn clamp_repos(n) {
-    let cap = max_root_cap();
-    let t = type_of(n);
-    if t == "i64" {
-        cap = n;
-    }
-    if cap < 1 { cap = 1; }
-    if cap > max_root_cap() { cap = max_root_cap(); }
-    cap
-}
-
-fn finalize_cmd(cmd, cmd_file, verdict_ok) {
-    let c = trimmed(cmd);
-    if c == "" || c == "UNKNOWN" { return "UNKNOWN"; }
-    if !allowed_cmd_file(cmd_file) { return "UNKNOWN"; }
-    if verdict_ok != true { return "UNKNOWN"; }
-    c
-}
-
-fn forbidden_block() {
-    let p = "";
-    p += "READ-ONLY RUN. Do not edit, create, delete, move, or write any file in the workspace.\n";
-    p += "Do not git add, commit, push, fetch, pull, checkout, switch, merge, rebase, stash, reset, or apply.\n";
-    p += "Do not terraform apply/plan, ansible-playbook, packer, npm/pnpm/yarn/pip/cargo install, or install plugins.\n";
-    p += "Do not run tests, linters, or formatters. Read Makefile/AGENTS.md; never execute their targets.\n";
-    p += "Never read .env, *.tfvars, terraform.tfstate, *.tfstate, auth.json, or anything under secrets/.\n";
-    p += "Never invent scripts, make targets, or package.json scripts. If a file is missing, that command is UNKNOWN.\n";
-    p
-}
-
-fn discover_prompt(root, cap) {
-    let p = forbidden_block();
-    p += "Discover git roots under this workspace directory (JSON): " + json_encode(root) + "\n";
-    p += "Keep at most 24 candidates so the host can cap to " + cap.to_string() + ".\n\n";
-    p += "Use the terminal and directory listing. Do not answer from memory.\n";
-    p += "An empty roots list is valid only after you listed immediate children and checked each one.\n\n";
-    p += "Algorithm:\n";
-    p += "1. CWD: run `git -C <root> rev-parse --is-inside-work-tree` and `--show-toplevel`.\n";
-    p += "   If it is a work tree and toplevel equals <root>, add {path: toplevel, source: \"cwd\"}.\n";
-    p += "2. Immediate children only (not recursive): list directories of <root>.\n";
-    p += "   Skip a child whose name is node_modules, .git, or .terraform.\n";
-    p += "   For each remaining child, run `git -C <root>/<child> rev-parse --show-toplevel`.\n";
-    p += "   If toplevel equals that child directory, add {path: toplevel, source: \"child\"}.\n";
-    p += "3. Worktrees: for the cwd repo (if any) and each child repo, run\n";
-    p += "   `git -C <repo> worktree list --porcelain`.\n";
-    p += "   Add each worktree path with source \"worktree\" when it is still under <root>.\n";
-    p += "   Skip the primary worktree if it is already listed as cwd or child.\n";
-    p += "4. Do not recurse looking for nested .git directories. Do not add submodules unless they\n";
-    p += "   appeared as an immediate child or a worktree list entry.\n";
-    p += "5. Skip any path whose segments include node_modules, .git, or .terraform.\n";
-    p += "Return roots in order: cwd, then children, then worktrees. Paths must be absolute.\n";
-    p
-}
-
-fn mapper_prompt(root, repo_path, source) {
-    let p = forbidden_block();
-    p += "Inspect exactly this git root and no other path.\n";
-    p += "Workspace root (JSON): " + json_encode(root) + "\n";
-    p += "Git root (JSON): " + json_encode(repo_path) + "\n";
-    p += "Discovery source (JSON): " + json_encode(source) + "\n\n";
-    p += "You must run tools before answering. A guess is invalid.\n\n";
-    p += "Git (read-only, -C the git root; never fetch):\n";
-    p += "- remote origin: `git remote get-url origin` — else origin=\"none\"\n";
-    p += "- branch: `git branch --show-current` — else \"UNKNOWN\"\n";
-    p += "- dirty: `git status --porcelain` non-empty => dirty true, empty => false\n";
-    p += "- ahead/behind: from `git status -sb` or `git rev-list --left-right --count @{upstream}...HEAD`\n";
-    p += "  Format as \"ahead N / behind M\". If upstream is missing, ahead_behind=\"unknown\".\n\n";
-    p += "Stack from lockfiles in the git-root directory only (do not recurse):\n";
-    p += "pnpm-lock.yaml => javascript/pnpm; package-lock.json => javascript/npm;\n";
-    p += "go.mod => go; Cargo.toml => rust/cargo; requirements*.txt => python/pip.\n";
-    p += "Join multiples with +. If none exist, stack=\"UNKNOWN\".\n\n";
-    p += "Commands: read ONLY AGENTS.md and Makefile (or makefile) at the git root.\n";
-    p += "Extract real test, lint, typecheck, and verify commands those files name.\n";
-    p += "Verify each name against the file contents you read. If the file does not exist or\n";
-    p += "does not name that command, the field is UNKNOWN. Never invent. Never use package.json.\n";
-    p += "Set test_cmd_file/lint_cmd_file/typecheck_cmd_file/verify_cmd_file to the file you read,\n";
-    p += "or empty when UNKNOWN.\n\n";
-    p += "Kind: IAC if terraform/, ansible/, packer/, or *.tf; app if application/library code;\n";
-    p += "docs if primarily documentation. IAC wins over app; app wins over docs. One of: app, IAC, docs.\n\n";
-    p += "first_touch: one existing file a new agent should open first (prefer AGENTS.md, else Makefile,\n";
-    p += "else README.md) OR one verified command. first_touch_file must exist. Do not point at secrets.\n";
-    p += "Echo source as given. path must be the git root you inspected.\n";
-    p
-}
-
-fn verifier_prompt(root, claim) {
-    let p = forbidden_block();
-    p += "Adversarially verify this repo map claim. Default every *_ok to false.\n";
-    p += "Workspace root (JSON): " + json_encode(root) + "\n";
-    p += "Claim (JSON): " + claim + "\n\n";
-    p += "Independently inspect the git root. Use read_file/list_dir/grep on AGENTS.md and Makefile only.\n";
-    p += "Do not trust the claim. Do not invent commands.\n\n";
-    p += "For each of test_cmd, lint_cmd, typecheck_cmd, verify_cmd:\n";
-    p += "- If the claim is UNKNOWN: set *_ok true only after you confirmed the named source file is\n";
-    p += "  absent OR exists and does not name that kind of command. Otherwise *_ok false.\n";
-    p += "- If the claim is a concrete command: set *_ok true only when the cited file exists, is\n";
-    p += "  named AGENTS.md or Makefile, sits in this git root, and the file text actually contains\n";
-    p += "  that command (a Makefile target or an explicit instruction). Otherwise *_ok false.\n";
-    p += "- Commands taken from package.json, CI yaml, or README do not count.\n";
-    p += "first_touch_ok true only if that file exists (read it) or the first_touch string is one of\n";
-    p += "the commands you just confirmed. evidence: quote the file path and the line you saw.\n";
-    p
-}
-
-if args == () {
-    pause("verification", "Pass args.root — the workspace directory to map. Optional args.max_repos (1-12, default 12).");
-}
-
-let root_raw = args.root;
-if root_raw == () || trimmed(as_str(root_raw)) == "" {
-    pause("verification", "Pass args.root — the workspace directory to map. Optional args.max_repos (1-12, default 12).");
-}
-
-let root = normalize_dir(as_str(root_raw));
-let cap = max_root_cap();
-if args.max_repos != () {
-    cap = clamp_repos(args.max_repos);
-}
-
-log("Mapping git roots under " + root + " (cap " + cap.to_string() + ")");
+let root_json = json_encode(root);
+let max_json = json_encode(max_repos);
 
 phase("Discover");
-let disc = agent(discover_prompt(root, cap), #{
-    label: "discover-roots",
+log("Discovering git roots under " + root + " (map cap " + max_repos.to_string() + ")");
+
+let discover_prompt = "";
+discover_prompt += "Map git repository roots in a workspace. This is READ-ONLY observation.\n";
+discover_prompt += "Do not edit, commit, push, checkout, reset, stash, rebase, apply terraform, install packages, or install plugins.\n";
+discover_prompt += "Never read, open, or grep: .env, *.tfvars, terraform.tfstate, auth.json, secrets/, or any file under a secrets/ directory.\n\n";
+discover_prompt += "Workspace root to scan (JSON): " + root_json + "\n";
+discover_prompt += "Return at most 24 roots. A later filter maps at most " + max_json + ", preferring self and immediate children over extra worktrees.\n\n";
+discover_prompt += "Required steps — use tools; do not answer from memory:\n";
+discover_prompt += "1. list_dir the workspace root.\n";
+discover_prompt += "2. If the workspace root itself is a git repo (`.git` file/dir or `git -C <root> rev-parse --is-inside-work-tree`), include it with source \"self\" and relpath \".\".\n";
+discover_prompt += "3. For every IMMEDIATE child directory only, check for `.git`. Skip names node_modules, .git, .terraform. Do not recurse into those, and do not report nested repos inside them. Include each immediate child git repo with source \"child\" and relpath set to that single directory name (example: \"medianest\"). path may be absolute; relpath must still be the single child name with no slash.\n";
+discover_prompt += "4. For the workspace root (if a repo) and each accepted child, run `git -C <path> worktree list --porcelain` if allowed. Include EXTRA worktrees only (skip a worktree whose path is already the self or child main checkout) with source \"worktree\". relpath is the path relative to the workspace root when the worktree is inside it (example: \".worktrees/botfix-ts1\"); use empty relpath when the worktree is outside the workspace.\n";
+discover_prompt += "5. If shell git is blocked, fall back to list_dir of `.worktrees` and `.git` files. Still skip node_modules, .git, .terraform.\n\n";
+discover_prompt += "Allowed shell: git rev-parse, git worktree list, test/ls for `.git` existence. Forbidden: git add/commit/push/checkout/reset/stash/rebase/clean, terraform, npm/pnpm/pip/cargo/pipenv install, writes, rm.\n\n";
+discover_prompt += "Return {path, relpath, source}. path is the working tree (prefer `git rev-parse --show-toplevel`, not the .git dir). source is exactly one of: self, child, worktree.\n";
+discover_prompt += "relpath is required: \".\" for self, a single path segment for child, workspace-relative or empty for worktree.\n";
+discover_prompt += "Do not invent paths. Every path must come from list_dir or git worktree list.\n";
+discover_prompt += "List self and children first, then extra worktrees. An empty list is valid only after you listed the workspace root and checked for `.git` in it and in immediate children.";
+
+let located = agent(discover_prompt, #{
+    label: "discover",
     capability_mode: "execute",
-    output_schema: discover_schema,
+    output_schema: roots_schema,
 });
 
 let raw_roots = [];
-if disc != () && disc.success && disc.output != () && disc.output.roots != () {
-    if type_of(disc.output.roots) == "array" {
-        raw_roots = disc.output.roots;
-    }
+if located != () && located.success && is_map(located.output) {
+    raw_roots = as_array(located.output.roots);
 }
+log("Discoverer returned " + raw_roots.len().to_string() + " raw roots");
 
-let cwd_roots = [];
-let child_roots = [];
-let worktree_roots = [];
-let dropped = [];
-let seen = [];
-
+let bucket_self = [];
+let bucket_child = [];
+let bucket_wt = [];
+let dropped_scope = 0;
 for item in raw_roots {
-    if item == () { continue; }
-    let pth = "";
-    let src_raw = "";
-    if type_of(item) == "map" {
-        pth = as_str(item.path);
-        src_raw = as_str(item.source);
-    }
-    let pnorm = normalize_dir(pth);
-    if pnorm == "" {
-        dropped.push("(empty path)");
+    if !is_map(item) {
+        dropped_scope += 1;
         continue;
     }
-    if !path_under_root(pnorm, root) {
-        dropped.push(pnorm + " (outside root)");
+    let p = norm_path(item.path);
+    let rel = norm_path(item.relpath);
+    let src = as_string(item.source);
+    if forbidden_path(p) {
+        log("drop forbidden path: " + p);
+        dropped_scope += 1;
         continue;
     }
-    if has_skipped_segment(pnorm) {
-        dropped.push(pnorm + " (skipped segment)");
+    if rel != "" && forbidden_path(rel) {
+        log("drop forbidden relpath: " + rel);
+        dropped_scope += 1;
         continue;
     }
-    if already_have(seen, pnorm) {
-        dropped.push(pnorm + " (duplicate)");
-        continue;
-    }
-    let src = classify_source(src_raw);
-    let keep = false;
-    if pnorm == root {
-        keep = true;
-        src = "cwd";
-    } else if is_immediate_child_path(pnorm, root) {
-        keep = true;
-        if src != "worktree" { src = "child"; }
-    } else if src == "worktree" {
-        keep = true;
-    }
-    if !keep {
-        dropped.push(pnorm + " (nested non-worktree)");
-        continue;
-    }
-    seen.push(pnorm);
-    let rec = #{ path: pnorm, source: src };
-    if src == "cwd" {
-        cwd_roots.push(rec);
+    let rec = #{ path: p, relpath: rel, source: src };
+    if src == "self" {
+        if is_self_root(rel, p, root) {
+            bucket_self.push(rec);
+        } else {
+            log("drop out-of-scope self: " + p);
+            dropped_scope += 1;
+        }
     } else if src == "child" {
-        child_roots.push(rec);
+        if is_single_segment(rel) {
+            bucket_child.push(rec);
+        } else {
+            log("drop child without single-segment relpath: " + p + " relpath=" + rel);
+            dropped_scope += 1;
+        }
+    } else if src == "worktree" {
+        bucket_wt.push(rec);
     } else {
-        worktree_roots.push(rec);
+        log("drop unknown source: " + src + " " + p);
+        dropped_scope += 1;
     }
 }
 
-let kept = [];
-for r in cwd_roots { kept.push(r); }
-for r in child_roots { kept.push(r); }
-for r in worktree_roots { kept.push(r); }
+let roots = [];
+let seen = [];
+let dropped_dup = 0;
+let dropped_cap = 0;
 
-let over_cap = [];
-if kept.len() > cap {
-    let i = cap;
-    while i < kept.len() {
-        over_cap.push(kept[i].path);
-        i += 1;
-    }
-    let trimmed_kept = [];
-    let j = 0;
-    while j < cap {
-        trimmed_kept.push(kept[j]);
-        j += 1;
-    }
-    kept = trimmed_kept;
-}
+let t1 = take_bucket(bucket_self, roots, seen, max_repos, dropped_dup, dropped_cap);
+roots = t1.roots;
+seen = t1.seen;
+dropped_dup = t1.dropped_dup;
+dropped_cap = t1.dropped_cap;
+let t2 = take_bucket(bucket_child, roots, seen, max_repos, dropped_dup, dropped_cap);
+roots = t2.roots;
+seen = t2.seen;
+dropped_dup = t2.dropped_dup;
+dropped_cap = t2.dropped_cap;
+let t3 = take_bucket(bucket_wt, roots, seen, max_repos, dropped_dup, dropped_cap);
+roots = t3.roots;
+seen = t3.seen;
+dropped_dup = t3.dropped_dup;
+dropped_cap = t3.dropped_cap;
 
-if dropped.len() > 0 {
-    log("Dropped " + dropped.len().to_string() + " discovered paths as out of scope or duplicate");
-}
-if over_cap.len() > 0 {
-    log("Capped at " + cap.to_string() + "; omitted " + over_cap.len().to_string() + " extra roots");
-}
-log("Keeping " + kept.len().to_string() + " git roots");
-
-if kept.len() == 0 {
-    phase("Report");
-    let empty = "";
-    empty += "# Workspace map\n\n";
-    empty += "No git roots found under `" + sanitize_cell(root) + "` after checking cwd, immediate children, and worktrees.\n\n";
-    empty += "| path | origin | branch | status | ahead/behind | stack | test | lint | typecheck | verify | kind | first touch |\n";
-    empty += "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n\n";
-    empty += "## Workspace summary\n";
-    empty += "Mapped 0 git roots under " + root + " (cap " + cap.to_string() + ").\n";
-    empty += "Safe to work in now: none — no repositories discovered.\n";
-    empty += "Dirty: none.\n";
-    empty += "No verified commands: none (no repos).\n";
-    empty += "Stack mix: none.\n";
-    empty += "Kind mix: none.\n";
-    empty += "Worktrees included: none.\n";
-    empty += "Read-only map; do not edit, commit, push, apply terraform, or install plugins.\n";
-    if dropped.len() > 0 {
-        empty += "\nDropped: " + join_list(dropped) + "\n";
-    }
-    let empty_path = write_scratch_file("workspace-map.md", empty);
-    complete(#{ path: empty_path, report: empty, repos: [], dropped: dropped });
-}
+if dropped_scope > 0 { log("Dropped " + dropped_scope.to_string() + " out-of-scope or malformed roots"); }
+if dropped_dup > 0 { log("Dropped " + dropped_dup.to_string() + " duplicate roots"); }
+if dropped_cap > 0 { log("Dropped " + dropped_cap.to_string() + " roots over cap " + max_repos.to_string()); }
+log("Keeping " + roots.len().to_string() + " roots to map (self " + bucket_self.len().to_string() + ", child " + bucket_child.len().to_string() + ", worktree " + bucket_wt.len().to_string() + ")");
 
 phase("Map");
 let map_jobs = [];
 let mi = 0;
-for rec in kept {
-    let lbl = "map:" + mi.to_string();
+for repo in roots {
+    let path_json = json_encode(repo.path);
+    let mp = "";
+    mp += "Map ONE git working tree. This is READ-ONLY observation of that tree only.\n";
+    mp += "Do not edit, commit, push, checkout, reset, stash, rebase, apply terraform, install packages, or install plugins.\n";
+    mp += "Never read, open, or grep: .env, *.tfvars, terraform.tfstate, auth.json, secrets/, or any file under a secrets/ directory.\n";
+    mp += "Do not wander into sibling repos. Stay inside this working tree.\n\n";
+    mp += "Working tree path (JSON): " + path_json + "\n\n";
+    mp += "Required steps — use tools; do not answer from memory:\n";
+    mp += "1. Confirm the path exists (list_dir). If it does not, still return the schema with UNKNOWN/empty fields and dirty \"unknown\".\n";
+    mp += "2. Git identity. Prefer these read-only commands if the sandbox allows:\n";
+    mp += "   - git -C <path> remote get-url origin\n";
+    mp += "   - git -C <path> branch --show-current\n";
+    mp += "   - git -C <path> status --porcelain\n";
+    mp += "   - git -C <path> status -sb\n";
+    mp += "   - git -C <path> rev-list --left-right --count @{upstream}...HEAD\n";
+    mp += "   If porcelain output is empty, dirty is \"clean\"; if any lines, dirty is \"dirty\". ";
+    mp += "   ahead_behind is \"even\" when both sides are 0, otherwise \"ahead N\" / \"behind N\" / \"ahead N, behind M\". If unknown, \"unknown\".\n";
+    mp += "   If shell is blocked, read <path>/.git/HEAD and <path>/.git/config (or the gitdir from a `.git` file) for branch and origin. dirty and ahead_behind then \"unknown\".\n";
+    mp += "   origin is the remote URL or \"unknown\". branch is the current branch or \"HEAD\" if detached, or \"unknown\".\n";
+    mp += "3. Stack from FILES that EXIST at the working tree root (list_dir; files only, never a directory named requirements):\n";
+    mp += "   - pnpm-lock.yaml → javascript/typescript + pnpm\n";
+    mp += "   - package-lock.json → javascript/typescript + npm\n";
+    mp += "   - go.mod → go + go modules\n";
+    mp += "   - Cargo.toml → rust + cargo\n";
+    mp += "   - requirements.txt or other requirements*.txt file → python + pip\n";
+    mp += "   - Pipfile or Pipfile.lock → python + pipenv\n";
+    mp += "   - pyproject.toml or poetry.lock → python + poetry/uv\n";
+    mp += "   lockfiles is the array of those filenames you actually saw. If several match, join language/package_manager with \" + \". ";
+    mp += "   If none, language and package_manager are UNKNOWN.\n";
+    mp += "4. Commands ONLY from AGENTS.md or Makefile at the working tree root. ";
+    mp += "   Read those files if they exist. Do not use package.json, CI, README, justfile, or tox as command sources.\n";
+    mp += "   Extract exact invocations for purposes test, lint, typecheck, verify. If a purpose is not named in those files, the field is UNKNOWN.\n";
+    mp += "   Never invent scripts. Copy the command text as written. command_source_file is the file you copied from, or empty if all UNKNOWN.\n";
+    mp += "5. Kind: app, iac, or docs. Pick the primary one.\n";
+    mp += "   - app: application source (package.json, go.mod, Cargo.toml, pyproject, Pipfile, src/, backend/, frontend/)\n";
+    mp += "   - iac: Terraform/Pulumi/CDK (*.tf, terragrunt). Do not open tfvars or terraform.tfstate.\n";
+    mp += "   - docs: primarily markdown/docs with little or no app/IAC code\n";
+    mp += "   kind_evidence_file is a file you opened that justifies the kind.\n";
+    mp += "6. Smallest safe change: ONE existing file a new agent should touch first. ";
+    mp += "   Prefer a test or docs file over production and over IAC apply. smallest_safe_file must exist (you listed or read it) and should be relative to this working tree. ";
+    mp += "   smallest_safe_change is one short sentence naming that file.\n\n";
+    mp += "Allowed shell: only the git read commands above plus listing files. Forbidden: any write, install, terraform apply, plugin install.\n";
+    mp += "Output the schema. Use UNKNOWN (uppercase) for missing command/stack fields rather than guessing.";
     map_jobs.push(#{
-        prompt: mapper_prompt(root, rec.path, rec.source),
-        label: lbl,
+        prompt: mp,
+        label: "map:" + mi.to_string(),
         capability_mode: "execute",
         output_schema: repo_schema,
     });
     mi += 1;
 }
-let map_results = parallel(map_jobs);
+
+let map_results = [];
+if map_jobs.len() > 0 {
+    log("Mapping " + map_jobs.len().to_string() + " roots in parallel");
+    map_results = parallel(map_jobs);
+} else {
+    log("No roots to map");
+}
 
 let mapped = [];
-let idx = 0;
-for rec in kept {
-    let slot = ();
-    if idx < map_results.len() { slot = map_results[idx]; }
+let map_i = 0;
+for repo in roots {
     let row = #{
-        path: rec.path,
-        source: rec.source,
-        origin: "UNKNOWN",
-        branch: "UNKNOWN",
-        dirty: (),
+        path: repo.path,
+        relpath: repo.relpath,
+        source: repo.source,
+        origin: "unknown",
+        branch: "unknown",
+        dirty: "unknown",
         ahead_behind: "unknown",
-        stack: "UNKNOWN",
-        test_cmd: "UNKNOWN",
-        lint_cmd: "UNKNOWN",
-        typecheck_cmd: "UNKNOWN",
-        verify_cmd: "UNKNOWN",
+        language: "UNKNOWN",
+        package_manager: "UNKNOWN",
+        lockfiles: [],
+        test_command: "UNKNOWN",
+        lint_command: "UNKNOWN",
+        typecheck_command: "UNKNOWN",
+        verify_command: "UNKNOWN",
+        command_source_file: "",
         kind: "unknown",
-        first_touch: "UNKNOWN",
-        test_cmd_file: "",
-        lint_cmd_file: "",
-        typecheck_cmd_file: "",
-        verify_cmd_file: "",
-        first_touch_file: "",
+        kind_evidence_file: "",
+        smallest_safe_change: "UNKNOWN",
+        smallest_safe_file: "",
         mapped_ok: false,
     };
-    if slot != () && slot.success && slot.output != () {
-        let o = slot.output;
+    let r = ();
+    if map_i < map_results.len() { r = map_results[map_i]; }
+    if r != () && r.success && is_map(r.output) {
+        let o = r.output;
+        row.origin = cmd_or_unknown(o.origin);
+        row.branch = cmd_or_unknown(o.branch);
+        row.dirty = norm_dirty(o.dirty);
+        row.ahead_behind = norm_ahead(o.ahead_behind);
+        row.language = cmd_or_unknown(o.language);
+        row.package_manager = cmd_or_unknown(o.package_manager);
+        let locks = [];
+        for lf in as_array(o.lockfiles) {
+            let name = as_string(lf);
+            if allowed_lockfile(name) { locks.push(name); }
+        }
+        row.lockfiles = locks;
+        row.test_command = cmd_or_unknown(o.test_command);
+        row.lint_command = cmd_or_unknown(o.lint_command);
+        row.typecheck_command = cmd_or_unknown(o.typecheck_command);
+        row.verify_command = cmd_or_unknown(o.verify_command);
+        row.command_source_file = as_string(o.command_source_file);
+        let kind = as_string(o.kind);
+        if kind == "app" || kind == "iac" || kind == "docs" {
+            row.kind = kind;
+        } else if kind != "" {
+            row.kind = kind;
+        }
+        row.kind_evidence_file = as_string(o.kind_evidence_file);
+        row.smallest_safe_change = cmd_or_unknown(o.smallest_safe_change);
+        row.smallest_safe_file = as_string(o.smallest_safe_file);
         row.mapped_ok = true;
-        if o.path != () && trimmed(as_str(o.path)) != "" {
-            let claimed = normalize_dir(as_str(o.path));
-            if path_under_root(claimed, root) && !has_skipped_segment(claimed) {
-                row.path = claimed;
-            }
-        }
-        if o.origin != () { row.origin = as_str(o.origin); }
-        if o.branch != () { row.branch = as_str(o.branch); }
-        if o.dirty == true || o.dirty == false { row.dirty = o.dirty; }
-        if o.ahead_behind != () { row.ahead_behind = as_str(o.ahead_behind); }
-        if o.stack != () { row.stack = as_str(o.stack); }
-        if o.test_cmd != () { row.test_cmd = as_str(o.test_cmd); }
-        if o.lint_cmd != () { row.lint_cmd = as_str(o.lint_cmd); }
-        if o.typecheck_cmd != () { row.typecheck_cmd = as_str(o.typecheck_cmd); }
-        if o.verify_cmd != () { row.verify_cmd = as_str(o.verify_cmd); }
-        row.kind = kind_label(o.kind);
-        if o.first_touch != () { row.first_touch = as_str(o.first_touch); }
-        if o.test_cmd_file != () { row.test_cmd_file = as_str(o.test_cmd_file); }
-        if o.lint_cmd_file != () { row.lint_cmd_file = as_str(o.lint_cmd_file); }
-        if o.typecheck_cmd_file != () { row.typecheck_cmd_file = as_str(o.typecheck_cmd_file); }
-        if o.verify_cmd_file != () { row.verify_cmd_file = as_str(o.verify_cmd_file); }
-        if o.first_touch_file != () { row.first_touch_file = as_str(o.first_touch_file); }
-        if o.source != () && classify_source(o.source) != "other" {
-            row.source = classify_source(o.source);
-        }
+    } else {
+        log("mapper produced no usable output for " + repo.path);
     }
     mapped.push(row);
-    idx += 1;
+    map_i += 1;
 }
 
 phase("Verify");
 let vjobs = [];
 let vi = 0;
 for row in mapped {
-    let claim = json_encode(#{
+    let payload = #{
         path: row.path,
-        test_cmd: row.test_cmd,
-        lint_cmd: row.lint_cmd,
-        typecheck_cmd: row.typecheck_cmd,
-        verify_cmd: row.verify_cmd,
-        test_cmd_file: row.test_cmd_file,
-        lint_cmd_file: row.lint_cmd_file,
-        typecheck_cmd_file: row.typecheck_cmd_file,
-        verify_cmd_file: row.verify_cmd_file,
-        first_touch: row.first_touch,
-        first_touch_file: row.first_touch_file,
-        mapped_ok: row.mapped_ok,
-    });
+        lockfiles: row.lockfiles,
+        test_command: row.test_command,
+        lint_command: row.lint_command,
+        typecheck_command: row.typecheck_command,
+        verify_command: row.verify_command,
+        command_source_file: row.command_source_file,
+        kind: row.kind,
+        kind_evidence_file: row.kind_evidence_file,
+        smallest_safe_change: row.smallest_safe_change,
+        smallest_safe_file: row.smallest_safe_file,
+    };
+    let encoded = json_encode(payload);
+    let vp = "";
+    vp += "Adversarially verify a workspace-map row by opening files yourself. Fail closed.\n";
+    vp += "Use only read-only tools: list_dir, read_file, grep. Do not write. Do not run installs, tests, terraform, or git mutations.\n";
+    vp += "Never read, open, or grep: .env, *.tfvars, terraform.tfstate, auth.json, secrets/, or any file under secrets/.\n\n";
+    vp += "Claim JSON:\n" + encoded + "\n\n";
+    vp += "Required checks:\n";
+    vp += "1. list_dir the path. If it does not exist, set inspected=false, all commands UNKNOWN, kind_ok=false, smallest_ok=false, lockfiles_ok=false, and explain in evidence.\n";
+    vp += "2. Commands: ONLY AGENTS.md and Makefile (at the working tree root) count. Read them if they exist. ";
+    vp += "For each of test, lint, typecheck, verify: if the mapper's command is not UNKNOWN, set that field to the same string ONLY if you quote a matching line in AGENTS.md or Makefile. ";
+    vp += "Otherwise set it to UNKNOWN. Never invent a script from package.json, CI, README, or memory. ";
+    vp += "If both files are missing, all four are UNKNOWN and that is correct.\n";
+    vp += "3. lockfiles_ok=true only if every listed lockfile name exists as a FILE in the working tree root (list_dir). Empty list is ok (lockfiles_ok=true after you listed the root and saw none of the expected names). A directory named requirements does not count.\n";
+    vp += "4. kind_ok=true only if kind_evidence_file exists and fairly supports app, iac, or docs. You may list_dir; do not open tfvars or state.\n";
+    vp += "5. smallest_ok=true only if smallest_safe_file exists (read_file or list_dir succeeded, relative to the working tree or as given) and the proposed first touch is a small, reversible file.\n";
+    vp += "inspected=true only if you actually listed the path. evidence must quote filenames or short excerpts you saw.\n";
+    vp += "Default kind_ok/smallest_ok/lockfiles_ok to false when evidence is missing.";
     vjobs.push(#{
-        prompt: verifier_prompt(root, claim),
+        prompt: vp,
         label: "verify:" + vi.to_string(),
-        capability_mode: "execute",
+        capability_mode: "read-only",
         output_schema: verdict_schema,
     });
     vi += 1;
 }
-let verdicts = parallel(vjobs);
+
+let verdicts = [];
+if vjobs.len() > 0 {
+    log("Verifying " + vjobs.len().to_string() + " mapped roots against files");
+    verdicts = parallel(vjobs);
+} else {
+    log("No mapped roots to verify");
+}
 
 let verified = [];
-let vi2 = 0;
+let vindex = 0;
+let n_verified = 0;
 for row in mapped {
-    let v = ();
-    if vi2 < verdicts.len() { v = verdicts[vi2]; }
-    let test_ok = false;
-    let lint_ok = false;
-    let typecheck_ok = false;
-    let verify_ok = false;
-    let touch_ok = false;
-    if v != () && v.success && v.output != () {
-        let vo = v.output;
-        if vo.test_ok == true { test_ok = true; }
-        if vo.lint_ok == true { lint_ok = true; }
-        if vo.typecheck_ok == true { typecheck_ok = true; }
-        if vo.verify_ok == true { verify_ok = true; }
-        if vo.first_touch_ok == true { touch_ok = true; }
-    }
-    let test_cmd = finalize_cmd(row.test_cmd, row.test_cmd_file, test_ok);
-    let lint_cmd = finalize_cmd(row.lint_cmd, row.lint_cmd_file, lint_ok);
-    let typecheck_cmd = finalize_cmd(row.typecheck_cmd, row.typecheck_cmd_file, typecheck_ok);
-    let verify_cmd = finalize_cmd(row.verify_cmd, row.verify_cmd_file, verify_ok);
-    let first_touch = "UNKNOWN";
-    if touch_ok == true {
-        let ft = trimmed(row.first_touch);
-        if ft != "" { first_touch = ft; }
-    }
-    verified.push(#{
+    let out = #{
         path: row.path,
+        relpath: row.relpath,
         source: row.source,
         origin: row.origin,
         branch: row.branch,
         dirty: row.dirty,
         ahead_behind: row.ahead_behind,
-        stack: row.stack,
-        test_cmd: test_cmd,
-        lint_cmd: lint_cmd,
-        typecheck_cmd: typecheck_cmd,
-        verify_cmd: verify_cmd,
-        kind: row.kind,
-        first_touch: first_touch,
-        mapped_ok: row.mapped_ok,
-    });
-    vi2 += 1;
+        language: row.language,
+        package_manager: row.package_manager,
+        lockfiles: row.lockfiles,
+        test_command: "UNKNOWN",
+        lint_command: "UNKNOWN",
+        typecheck_command: "UNKNOWN",
+        verify_command: "UNKNOWN",
+        kind: "unknown",
+        smallest_safe_change: "UNKNOWN",
+        smallest_safe_file: "",
+        inspected: false,
+        label: display_path(row.path, row.relpath),
+    };
+    let v = ();
+    if vindex < verdicts.len() { v = verdicts[vindex]; }
+    let ok = false;
+    if v != () && v.success && is_map(v.output) {
+        if v.output.inspected == true && as_string(v.output.evidence) != "" {
+            ok = true;
+        }
+    }
+    if ok {
+        n_verified += 1;
+        let vo = v.output;
+        out.inspected = true;
+        out.test_command = cmd_or_unknown(vo.test_command);
+        out.lint_command = cmd_or_unknown(vo.lint_command);
+        out.typecheck_command = cmd_or_unknown(vo.typecheck_command);
+        out.verify_command = cmd_or_unknown(vo.verify_command);
+        if vo.lockfiles_ok != true {
+            out.language = "UNKNOWN";
+            out.package_manager = "UNKNOWN";
+            out.lockfiles = [];
+        }
+        if vo.kind_ok == true {
+            out.kind = row.kind;
+        }
+        if vo.smallest_ok == true {
+            out.smallest_safe_change = row.smallest_safe_change;
+            out.smallest_safe_file = row.smallest_safe_file;
+        }
+    } else {
+        log("fail-closed unverified row: " + row.path);
+    }
+    verified.push(out);
+    vindex += 1;
 }
-mapped = verified;
+log(n_verified.to_string() + "/" + mapped.len().to_string() + " roots survived file-backed verification");
 
 phase("Report");
 
-let safe = [];
-let dirty_repos = [];
-let no_cmds = [];
-let stacks_seen = [];
-let kinds_app = 0;
-let kinds_iac = 0;
-let kinds_docs = 0;
-let kinds_unknown = 0;
-let worktrees = [];
-let unknown_status = [];
-
-for row in mapped {
-    if row.source == "worktree" { worktrees.push(rel_path(row.path, root)); }
-    if row.kind == "app" { kinds_app += 1; }
-    else if row.kind == "IAC" { kinds_iac += 1; }
-    else if row.kind == "docs" { kinds_docs += 1; }
-    else { kinds_unknown += 1; }
-    let st = trimmed(row.stack);
-    if st != "" && st != "UNKNOWN" {
-        if !already_have(stacks_seen, st) { stacks_seen.push(st); }
+let clean = [];
+let dirty_list = [];
+let unknown_dirty = [];
+let no_commands = [];
+let n_app = 0;
+let n_iac = 0;
+let n_docs = 0;
+let n_kind_unknown = 0;
+let n_worktree = 0;
+let n_child = 0;
+let n_self = 0;
+for row in verified {
+    if row.source == "worktree" { n_worktree += 1; }
+    else if row.source == "child" { n_child += 1; }
+    else if row.source == "self" { n_self += 1; }
+    if row.dirty == "clean" { clean.push(row.label); }
+    else if row.dirty == "dirty" { dirty_list.push(row.label); }
+    else { unknown_dirty.push(row.label); }
+    if row.test_command == "UNKNOWN" && row.lint_command == "UNKNOWN" && row.typecheck_command == "UNKNOWN" && row.verify_command == "UNKNOWN" {
+        no_commands.push(row.label);
     }
-    let rel = rel_path(row.path, root);
-    if row.dirty == true { dirty_repos.push(rel); }
-    else if row.dirty != false { unknown_status.push(rel); }
-    let has_cmd = row.test_cmd != "UNKNOWN" || row.lint_cmd != "UNKNOWN" || row.typecheck_cmd != "UNKNOWN" || row.verify_cmd != "UNKNOWN";
-    if !has_cmd { no_cmds.push(rel); }
-    if row.dirty == false && has_cmd { safe.push(rel); }
+    if row.kind == "app" { n_app += 1; }
+    else if row.kind == "iac" { n_iac += 1; }
+    else if row.kind == "docs" { n_docs += 1; }
+    else { n_kind_unknown += 1; }
 }
 
-let table = "";
-table += "# Workspace map\n\n";
-table += "Root: `" + sanitize_cell(root) + "` — " + mapped.len().to_string() + " git roots (cap " + cap.to_string() + ").\n\n";
-table += "| path | origin | branch | status | ahead/behind | stack | test | lint | typecheck | verify | kind | first touch |\n";
-table += "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
-for row in mapped {
-    let line = "| ";
-    line += sanitize_cell(rel_path(row.path, root));
-    line += " | ";
-    line += clip(row.origin, 40);
-    line += " | ";
-    line += sanitize_cell(row.branch);
-    line += " | ";
-    line += dirty_label(row.dirty);
-    line += " | ";
-    line += sanitize_cell(row.ahead_behind);
-    line += " | ";
-    line += clip(row.stack, 36);
-    line += " | ";
-    line += sanitize_cell(row.test_cmd);
-    line += " | ";
-    line += sanitize_cell(row.lint_cmd);
-    line += " | ";
-    line += sanitize_cell(row.typecheck_cmd);
-    line += " | ";
-    line += sanitize_cell(row.verify_cmd);
-    line += " | ";
-    line += sanitize_cell(row.kind);
-    line += " | ";
-    line += clip(row.first_touch, 40);
-    line += " |\n";
-    table += line;
-}
+let md = "";
+md += "# Workspace map\n\n";
+md += "Read-only scan of `" + root + "` (cap " + max_repos.to_string() + "). ";
+md += "Commands are shown only when copied from `AGENTS.md` or `Makefile` and re-read by a verifier. ";
+md += "Missing purposes are `UNKNOWN`. Git identity is mapper-reported. ";
+md += "Main checkouts are listed before extra worktrees.\n\n";
 
-table += "\n## Workspace summary\n";
-table += "Mapped " + mapped.len().to_string() + " git roots under " + root + " (cap " + cap.to_string() + "; omitted " + over_cap.len().to_string() + " over cap, dropped " + dropped.len().to_string() + " out of scope).\n";
-table += "Safe to work in now: " + join_list(safe) + ".\n";
-table += "Dirty: " + join_list(dirty_repos) + ".\n";
-table += "No verified commands: " + join_list(no_cmds) + ".\n";
-table += "Stack mix: " + join_list(stacks_seen) + ".\n";
-let kind_mix = "app " + kinds_app.to_string() + ", IAC " + kinds_iac.to_string() + ", docs " + kinds_docs.to_string() + ", unknown " + kinds_unknown.to_string();
-table += "Kind mix: " + kind_mix + ".\n";
-table += "Worktrees included: " + join_list(worktrees) + ".\n";
-table += "Read-only map; do not edit, commit, push, apply terraform, or install plugins.\n";
-
-if unknown_status.len() > 0 {
-    table += "\nStatus unknown (mapper failed or did not report dirty): " + join_list(unknown_status) + ".\n";
+md += "## Repos\n\n";
+md += "| Path | Origin | Branch | Dirty | Ahead/behind | Stack | Kind | test | lint | typecheck | verify | First touch |\n";
+md += "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n";
+if verified.len() == 0 {
+    md += "| _none_ | | | | | | | | | | | |\n";
+} else {
+    for row in verified {
+        let stack = row.language + "/" + row.package_manager;
+        let first = row.smallest_safe_file;
+        if first == "" { first = row.smallest_safe_change; }
+        md += "| `" + row.label + "` ";
+        md += "| `" + short_origin(row.origin) + "` ";
+        md += "| `" + row.branch + "` ";
+        md += "| " + row.dirty + " ";
+        md += "| " + row.ahead_behind + " ";
+        md += "| " + stack + " ";
+        md += "| " + row.kind + " ";
+        md += "| `" + row.test_command + "` ";
+        md += "| `" + row.lint_command + "` ";
+        md += "| `" + row.typecheck_command + "` ";
+        md += "| `" + row.verify_command + "` ";
+        md += "| `" + first + "` |\n";
+    }
 }
-if over_cap.len() > 0 {
-    table += "Omitted over cap: " + join_list(over_cap) + ".\n";
-}
+md += "\n";
 
-let report_path = write_scratch_file("workspace-map.md", table);
-log("Wrote workspace map with " + mapped.len().to_string() + " rows");
-complete(#{ path: report_path, report: table, repos: mapped, dropped: dropped, omitted: over_cap });
+md += "## Workspace summary\n\n";
+let line1 = "1. Workspace root `" + root + "`; mapped " + verified.len().to_string() + " git roots (self " + n_self.to_string() + ", child " + n_child.to_string() + ", worktree " + n_worktree.to_string() + "; discoverer raw " + raw_roots.len().to_string() + ").";
+let line2 = "2. Safe to work in now (clean working tree): " + join_names(clean) + ".";
+let line3 = "3. Dirty working trees: " + join_names(dirty_list) + ".";
+let line4 = "4. Dirty state unknown: " + join_names(unknown_dirty) + ".";
+let line5 = "5. Share no commands (test/lint/typecheck/verify all UNKNOWN): " + join_names(no_commands) + ".";
+let line6 = "6. Kinds — app " + n_app.to_string() + ", iac " + n_iac.to_string() + ", docs " + n_docs.to_string() + ", unknown " + n_kind_unknown.to_string() + ".";
+let line7 = "7. Dropped before map: scope " + dropped_scope.to_string() + ", dup " + dropped_dup.to_string() + ", cap " + dropped_cap.to_string() + " (children kept before extra worktrees).";
+let line8 = "8. File-backed verification kept " + n_verified.to_string() + "/" + mapped.len().to_string() + " roots; commands never invented; secrets/tfvars/state unread.";
+md += line1 + "\n";
+md += line2 + "\n";
+md += line3 + "\n";
+md += line4 + "\n";
+md += line5 + "\n";
+md += line6 + "\n";
+md += line7 + "\n";
+md += line8 + "\n";
+
+md += "\n## How this was produced\n\n";
+md += "A discoverer listed the workspace root, immediate child git repos, and extra `git worktree list` entries, each with a workspace-relative `relpath`. ";
+md += "The script keeps self, then children (single-segment relpath), then worktrees; skips node_modules/.git/.terraform; dedupes by path and relpath; and caps at " + max_repos.to_string() + ". ";
+md += "Each kept root was mapped in parallel, then a read-only verifier re-opened AGENTS.md/Makefile and cited files. ";
+md += "Unverified command, kind, and first-touch claims were reset to UNKNOWN. ";
+md += "This workflow does not edit, commit, push, apply terraform, or install plugins.\n";
+
+let report_path = write_scratch_file("report.md", md);
+complete(#{
+    path: report_path,
+    report: md,
+    root: root,
+    max_repos: max_repos,
+    roots: verified.len(),
+    verified: n_verified,
+    dropped_scope: dropped_scope,
+    dropped_dup: dropped_dup,
+    dropped_cap: dropped_cap,
+    clean: clean,
+    dirty: dirty_list,
+    no_commands: no_commands,
+});

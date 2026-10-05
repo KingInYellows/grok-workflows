@@ -3,7 +3,7 @@ let meta = #{
     description: "Report Linear triage, cycle, label, priority, and shipped-but-open issues, and write only the allowlisted fixes after a gate",
     when_to_use: "Health pass for the Linear team matching the origin repo name. Read-only unless args.apply is true. Completed-state writes also need args.confirm_done. Never cancels. /linear-organize or /workflow linear-organize.",
     phases: [
-        #{ title: "Inventory", detail: "setup, parallel priority lists, then detail shards" },
+        #{ title: "Inventory", detail: "setup, open lists, cycle-closed list, targeted detail" },
         #{ title: "Census", detail: "script rules, then parallel shipped and label judges" },
         #{ title: "Verify", detail: "one skeptic for each judgment class" },
         #{ title: "Gate", detail: "wait only when apply is true" },
@@ -17,6 +17,8 @@ const MAX_SHIPPED = 15;
 const MAX_UNLABELED = 20;
 const MAX_SHARD = 25;
 const MAX_SHIP_SHARD = 5;
+const MAX_DETAIL_SHARD = 5;
+const MAX_CYCLE_CLOSED = 40;
 
 fn trimmed(s) {
     if type_of(s) == "string" {
@@ -90,6 +92,32 @@ fn clip(s, n) {
     let text = trimmed(s);
     if text.len() > n { return text.sub_string(0, n); }
     text
+}
+
+fn find_at(text, needle) {
+    if type_of(text) != "string" || type_of(needle) != "string" { return -1; }
+    if needle == "" { return -1; }
+    let idx = text.index_of(needle);
+    if idx == () { return -1; }
+    if idx < 0 { return -1; }
+    idx
+}
+
+fn scope_text(raw) {
+    let text = trimmed(raw);
+    if text == "" { return ""; }
+    let markers = ["Remaining scope", "Remaining work", "Acceptance criteria", "Acceptance Criteria", "## Acceptance", "Acceptance:"];
+    let best = -1;
+    for marker in markers {
+        let idx = find_at(text, marker);
+        if idx >= 0 {
+            if best < 0 || idx < best { best = idx; }
+        }
+    }
+    if best >= 0 {
+        return clip(text.sub_string(best, text.len() - best), 1200);
+    }
+    clip(text, 400)
 }
 
 fn join_strings(items) {
@@ -202,6 +230,14 @@ fn status_rank(status) {
     4
 }
 
+fn open_status(status) {
+    if status == "backlog" { return true; }
+    if status == "unstarted" { return true; }
+    if status == "started" { return true; }
+    if status == "triage" { return true; }
+    false
+}
+
 fn better_issue(a, b) {
     let sa = status_rank(map_str(a, "status_type"));
     let sb = status_rank(map_str(b, "status_type"));
@@ -292,8 +328,8 @@ fn normalize_issue(raw) {
         labels: copy_strings(map_get(raw, "labels")),
         cycle_id: map_str(raw, "cycle_id"),
         blocked_by: copy_strings(map_get(raw, "blocked_by")),
-        blocker_states: [],
-        description: clip(map_str(raw, "description"), 400),
+        blocker_states: normalize_blocker_states(map_get(raw, "blocker_states")),
+        description: scope_text(map_str(raw, "description")),
         description_empty: map_bool(raw, "description_empty", false),
     }
 }
@@ -391,17 +427,156 @@ fn merge_details(issues, details) {
     for issue in issues {
         let row = detail_for(details, map_str(issue, "identifier"));
         if row != () {
-            issue.description_empty = map_bool(row, "description_empty", false);
+            let body = scope_text(map_str(row, "description"));
+            if body != "" || map_bool(row, "description_empty", false) {
+                issue.description_empty = map_bool(row, "description_empty", false);
+                issue.description = body;
+            }
             let states = normalize_blocker_states(map_get(row, "blocked_by"));
-            let ids = [];
-            for state in states { ids.push(map_str(state, "identifier")); }
-            issue.blocked_by = ids;
-            issue.blocker_states = states;
-            issue.description = clip(map_str(row, "description"), 400);
+            if states.len() > 0 {
+                let ids = [];
+                for state in states { ids.push(map_str(state, "identifier")); }
+                issue.blocked_by = ids;
+                issue.blocker_states = states;
+            }
         }
         out.push(issue);
     }
     out
+}
+
+fn closed_status(status) {
+    status == "completed" || status == "canceled"
+}
+
+fn keep_cycle_closed(raw, cycle_id, max_issues) {
+    let rows = [];
+    let dropped = 0;
+    let want = trimmed(cycle_id);
+    for item in as_array(raw) {
+        if type_of(item) == "map" {
+            let row = normalize_issue(item);
+            let id = map_str(row, "identifier");
+            let url = map_str(row, "url");
+            let status = map_str(row, "status_type");
+            let cycle = map_str(row, "cycle_id");
+            if id != "" && url != "" && want != "" && cycle == want && closed_status(status) {
+                if rows.len() < max_issues {
+                    rows.push(row);
+                } else {
+                    dropped += 1;
+                }
+            }
+        }
+    }
+    #{ issues: rows, dropped: dropped }
+}
+
+fn merge_blockers(issues, rows) {
+    let out = [];
+    for issue in issues {
+        let extra = ();
+        let want = map_str(issue, "identifier");
+        for row in rows {
+            if type_of(row) == "map" && map_str(row, "identifier") == want { extra = row; }
+        }
+        if extra != () {
+            let ids = copy_strings(map_get(extra, "blocked_by"));
+            let states = normalize_blocker_states(map_get(extra, "blocker_states"));
+            if copy_strings(map_get(issue, "blocked_by")).len() == 0 && ids.len() > 0 {
+                issue.blocked_by = ids;
+            }
+            if as_array(map_get(issue, "blocker_states")).len() == 0 && states.len() > 0 {
+                issue.blocker_states = states;
+                if copy_strings(map_get(issue, "blocked_by")).len() == 0 {
+                    let from_states = [];
+                    for state in states { from_states.push(map_str(state, "identifier")); }
+                    issue.blocked_by = from_states;
+                }
+            }
+        }
+        out.push(issue);
+    }
+    out
+}
+
+fn append_missing(base, extra) {
+    let out = [];
+    let seen = [];
+    for item in base {
+        seen.push(map_str(item, "identifier"));
+        out.push(item);
+    }
+    for item in extra {
+        let id = map_str(item, "identifier");
+        if id != "" && !id_seen(seen, id) {
+            seen.push(id);
+            out.push(item);
+        }
+    }
+    out
+}
+
+fn plan_row(id, need_description, need_blockers) {
+    #{
+        identifier: id,
+        need_description: need_description,
+        need_blockers: need_blockers,
+    }
+}
+
+fn flag_plan(rows, id, need_description, need_blockers) {
+    let out = [];
+    let found = false;
+    for row in rows {
+        if map_str(row, "identifier") == id {
+            found = true;
+            let desc = map_bool(row, "need_description", false);
+            let blockers = map_bool(row, "need_blockers", false);
+            if need_description { desc = true; }
+            if need_blockers { blockers = true; }
+            out.push(plan_row(id, desc, blockers));
+        } else {
+            out.push(row);
+        }
+    }
+    if !found { out.push(plan_row(id, need_description, need_blockers)); }
+    out
+}
+
+fn ship_status(status) {
+    status == "started" || status == "unstarted"
+}
+
+fn detail_plan(issues, max_shipped, max_unlabeled) {
+    let rows = [];
+    let ranked = sort_with(issues, true);
+    let ship_n = 0;
+    for issue in ranked {
+        if ship_status(map_str(issue, "status_type")) {
+            if ship_n < max_shipped {
+                rows = flag_plan(rows, map_str(issue, "identifier"), true, false);
+                ship_n += 1;
+            }
+        }
+    }
+    let label_n = 0;
+    for issue in issues {
+        if label_count(issue) == 0 {
+            if label_n < max_unlabeled {
+                rows = flag_plan(rows, map_str(issue, "identifier"), true, false);
+                label_n += 1;
+            }
+        }
+    }
+    for issue in issues {
+        let ids = copy_strings(map_get(issue, "blocked_by"));
+        let states = as_array(map_get(issue, "blocker_states"));
+        if ids.len() > 0 && states.len() == 0 {
+            rows = flag_plan(rows, map_str(issue, "identifier"), false, true);
+        }
+    }
+    rows
 }
 
 fn blocker_row(issue, id) {
@@ -419,6 +594,7 @@ fn ship_enabled(behind) {
 
 fn keep_issues(raw, only_issue, max_issues) {
     let rows = [];
+    let closed = 0;
     let want = trimmed(only_issue);
     for item in as_array(raw) {
         if type_of(item) == "map" {
@@ -426,7 +602,11 @@ fn keep_issues(raw, only_issue, max_issues) {
             let id = map_str(row, "identifier");
             let url = map_str(row, "url");
             if id != "" && url != "" && (want == "" || id == want) {
-                rows.push(row);
+                if want != "" || open_status(map_str(row, "status_type")) {
+                    rows.push(row);
+                } else {
+                    closed += 1;
+                }
             }
         }
     }
@@ -436,7 +616,7 @@ fn keep_issues(raw, only_issue, max_issues) {
         dropped = ranked.len() - max_issues;
         ranked = take_prefix(ranked, max_issues);
     }
-    #{ issues: ranked, dropped: dropped }
+    #{ issues: ranked, dropped: dropped, closed: closed }
 }
 
 fn normalize_states(raw) {
@@ -563,13 +743,13 @@ fn census(issues, cycle_id, cycle_ok, states, max_shipped, max_unlabeled) {
             actions.push(make_action(issue, "clear_cycle", "", "", "", "", "remove from cycle"));
         }
         let priority = map_int(issue, "priority");
-        if priority == 0 && (inside || status == "started" || status == "unstarted" || status == "backlog") {
+        if priority == 0 && open_status(status) {
             findings.push(make_finding(issue, "priority_missing", "priority is 0"));
         }
         if cycle_ok && status == "started" && !inside {
             findings.push(make_finding(issue, "started_outside_cycle", "started and not in the current cycle"));
         }
-        if map_bool(issue, "description_empty", false) {
+        if map_bool(issue, "description_empty", false) && open_status(status) {
             findings.push(make_finding(issue, "empty_description", "description is empty"));
         }
         let bad = [];
@@ -597,10 +777,10 @@ fn census(issues, cycle_id, cycle_ok, states, max_shipped, max_unlabeled) {
         if done_blocks.len() > 0 {
             findings.push(make_finding(issue, "blocker_done", join_strings(done_blocks)));
         }
-        if status == "started" || status == "unstarted" {
+        if ship_status(status) {
             shipped.push(issue);
         }
-        if label_count(issue) == 0 {
+        if label_count(issue) == 0 && open_status(status) {
             unlabeled.push(issue);
         }
     }
@@ -709,7 +889,7 @@ fn packet_rows(issues, rows, with_label) {
             label: "",
             description: "",
         };
-        if issue != () { packet.description = clip(map_str(issue, "description"), 400); }
+        if issue != () { packet.description = clip(map_str(issue, "description"), 1200); }
         if with_label { packet.label = map_str(row, "label"); }
         out.push(packet);
     }
@@ -905,9 +1085,67 @@ fn self_check() {
     if !inventory_prompt("", "", 150).contains("head_behind") { return "behind prompt"; }
     if !inventory_prompt("", "", 150).contains("search_tool") { return "search prompt"; }
     if !inventory_prompt("", "", 150).contains("Do not call get_issue") { return "index get"; }
-    if !detail_prompt("[]").contains("get_issue") { return "detail prompt"; }
+    if !detail_prompt("[]").contains("need_description") { return "detail prompt"; }
+    if !ship_skeptic_prompt("main", "{}").contains("todos/debt") { return "skeptic debt"; }
+    if !ship_skeptic_prompt("main", "{}").contains("Do not read CI") { return "skeptic ci"; }
+    if !blocked_prompt("team", "medianest").contains("no_blocked_filter") { return "blocked prompt"; }
+    if !shipped_prompt("main", "[]").contains("every commit") { return "every commit"; }
+    if !detail_prompt("[]").contains("Always return blocked_by") { return "detail blockers"; }
+    let enriched = merge_blockers([
+        sample_issue("A", "started", 2, "c1", ["Bug"], [], false),
+    ], [
+        #{ identifier: "A", blocked_by: ["OLD"], blocker_states: [#{ identifier: "OLD", status_type: "completed", found: true }] },
+    ]);
+    if copy_strings(map_get(enriched[0], "blocked_by")).len() != 1 { return "merge blockers"; }
+    if !cycle_closed_prompt("team", "medianest", "c1", 40).contains("still on one cycle") { return "cycle prompt"; }
+    let scoped = scope_text("intro text Remaining scope: delete the password routes");
+    if !scoped.contains("Remaining scope") { return "scope marker"; }
+    if scoped.contains("intro text") { return "scope prefix"; }
+    if scope_text("short body") != "short body" { return "scope plain"; }
+    let cycle_rows = keep_cycle_closed([
+        #{ identifier: "IN", url: "https://linear.app/in", title: "IN", priority: 2, status_type: "completed", state_name: "Done", labels: [], cycle_id: "c1", blocked_by: [], description_empty: false },
+        #{ identifier: "OUT", url: "https://linear.app/out", title: "OUT", priority: 2, status_type: "completed", state_name: "Done", labels: [], cycle_id: "other", blocked_by: [], description_empty: false },
+        #{ identifier: "OPEN", url: "https://linear.app/open", title: "OPEN", priority: 2, status_type: "backlog", state_name: "Backlog", labels: [], cycle_id: "c1", blocked_by: [], description_empty: false },
+    ], "c1", 40);
+    if cycle_rows.issues.len() != 1 { return "cycle closed keep"; }
+    if map_str(cycle_rows.issues[0], "identifier") != "IN" { return "cycle closed id"; }
+    let plan_issues = [
+        sample_issue("S1", "started", 1, "c1", ["Bug"], [], false),
+        sample_issue("B1", "backlog", 2, "", [], [], false),
+        sample_issue("L1", "backlog", 3, "", ["Bug"], ["MED-1"], false),
+    ];
+    let plan = detail_plan(plan_issues, 15, 20);
+    if plan.len() != 3 { return "plan count"; }
+    let plan_blockers = detail_plan(plan_issues, 0, 0);
+    if plan_blockers.len() != 1 { return "plan blockers"; }
+    if map_str(plan_blockers[0], "identifier") != "L1" { return "plan blocker id"; }
+    let grouped = report_md("h\n", [], [
+        #{ identifier: "MED-1", kind: "mark_done", status: "report_only", detail: "confirm_done is false", evidence: "abc" },
+        #{ identifier: "MED-2", kind: "clear_cycle", status: "proposed", detail: "x", evidence: "" },
+    ], [
+        #{ identifier: "MED-3", kind: "blocker_done", status: "report_only", detail: "MED-9", evidence: "" },
+        #{ identifier: "MED-4", kind: "priority_missing", status: "report_only", detail: "priority is 0", evidence: "" },
+        #{ identifier: "MED-5", kind: "priority_missing", status: "report_only", detail: "priority is 0", evidence: "" },
+    ]);
+    let done_at = grouped.index_of("## Done proposals");
+    let act_at = grouped.index_of("## Actions");
+    let pri_at = grouped.index_of("## Priority missing");
+    if done_at == () || act_at == () || pri_at == () { return "report sections"; }
+    if done_at > act_at || act_at > pri_at { return "report order"; }
+    if grouped.contains("### MED-4") { return "priority heading"; }
     if !list_prompt("team", "medianest", 2, "", 150).contains("Do not call get_issue") { return "list get"; }
     if !list_prompt("team", "medianest", 2, "", 150).contains("priority 2") { return "list priority"; }
+    if !list_prompt("team", "medianest", 2, "", 150).contains("Do not page completed, canceled, or duplicate") { return "list closed"; }
+    let closed_merge = merge_listed([
+        [#{ identifier: "C", url: "https://linear.app/c", title: "C", priority: 1, status_type: "completed", state_name: "Done", labels: [], cycle_id: "", blocked_by: [], description_empty: false }],
+        [#{ identifier: "D", url: "https://linear.app/d", title: "D", priority: 2, status_type: "duplicate", state_name: "Duplicate", labels: [], cycle_id: "", blocked_by: [], description_empty: false }, #{ identifier: "E", url: "https://linear.app/e", title: "E", priority: 2, status_type: "canceled", state_name: "Canceled", labels: [], cycle_id: "", blocked_by: [], description_empty: false }],
+    ], "", 150);
+    if closed_merge.issues.len() != 0 { return "closed kept"; }
+    if closed_merge.closed != 3 { return "closed count"; }
+    let named_closed = merge_listed([
+        [#{ identifier: "C", url: "https://linear.app/c", title: "C", priority: 1, status_type: "completed", state_name: "Done", labels: [], cycle_id: "", blocked_by: [], description_empty: false }],
+    ], "C", 150);
+    if named_closed.issues.len() != 1 { return "named closed"; }
     if label_grounded("label `ci-watcher`", "ci") { return "ci prefix"; }
     if !label_grounded("uses `security` control", "security") { return "security token"; }
     let merged = merge_listed([
@@ -969,12 +1207,33 @@ fn list_prompt(team_id, team_name, priority, only_issue, max_issues) {
     } else {
         p += "Filter to priority ";
         p += priority.to_string();
-        p += " only. Page until that priority band is exhausted or you reach ";
+        p += " only. Keep only status_type backlog, unstarted, started, and triage. When the list tool schema has a status or state filter, request only those four types. Do not page completed, canceled, or duplicate. If one is returned, drop it and do not count it toward the cap. Page until that open band is exhausted or you reach ";
         p += max_issues.to_string();
-        p += " issues. Set truncated true only when that band is larger than the cap.\n";
+        p += " open issues. Set truncated true only when the open band is larger than the cap.\n";
     }
-    p += "For each issue return identifier, url, title, priority, status_type, state_name, labels, cycle_id, blocked_by as an empty array, and description_empty false. status_type is the lowercase Linear statusType.\n";
+    p += "For each kept issue return identifier, url, title, priority, status_type, state_name, labels, cycle_id, blocked_by, blocker_states, and description_empty. status_type is the lowercase Linear statusType. When the list payload names issues that block this one, put those identifiers in blocked_by. When that payload also names a blocker's status type, add one blocker_states object with identifier, status_type, and found true. Otherwise return both arrays empty. Do not call get_issue to fill them. Set description_empty true only when the payload shows an empty description. When it has no description field, set description_empty false.\n";
     p += packet_line(json_encode(#{ team_id: team_id, team_name: team_name, priority: priority, only_issue: only_issue }));
+    p
+}
+
+fn cycle_closed_prompt(team_id, team_name, cycle_id, max_issues) {
+    let p = "You list completed and canceled Linear issues that are still on one cycle. Do not edit. Do not call get_issue. Do not open issue bodies.\n";
+    p += guardrails_text();
+    p += "Use the team id and cycle id in the packet. Call search_tool once, then make one list_issues call for that team, that cycle, and status types completed and canceled. If the first page is empty, return immediately. Do not list other statuses to test the filter. Do not page other cycles. Do not page backlog, unstarted, started, triage, or duplicate.\n";
+    p += "Page until that cycle's completed and canceled issues are exhausted or you reach ";
+    p += max_issues.to_string();
+    p += ". Set truncated true only when that set is larger than the cap.\n";
+    p += "For each kept issue return identifier, url, title, priority, status_type, state_name, labels, cycle_id, blocked_by as an empty array, blocker_states as an empty array, and description_empty false. status_type is the lowercase Linear statusType.\n";
+    p += packet_line(json_encode(#{ team_id: team_id, team_name: team_name, cycle_id: cycle_id }));
+    p
+}
+
+fn blocked_prompt(team_id, team_name) {
+    let p = "You list open Linear issues that are blocked by another issue. Do not edit. Do not call get_issue. Do not open issue bodies. Do not page the whole team.\n";
+    p += guardrails_text();
+    p += "Call search_tool once. If list_issues has a filter for blocked issues or blocking relations, call it at most twice for this team and for status types backlog, unstarted, started, and triage. Return those issues with blocked_by identifiers. When the payload includes a blocker's status type, add a blocker_states object with identifier, status_type, and found true.\n";
+    p += "If the schema has no blocked or relation filter, return an empty issues array, truncated false, ok true, and error no_blocked_filter. Do not scan priorities one by one.\n";
+    p += packet_line(json_encode(#{ team_id: team_id, team_name: team_name }));
     p
 }
 
@@ -983,19 +1242,22 @@ fn shipped_prompt(trunk, packet_json) {
     p += guardrails_text();
     p += "Run git log origin/";
     p += trunk;
-    p += " --grep=IDENTIFIER for each issue. Read file contents with git show origin/";
+    p += " --grep=IDENTIFIER for each issue. List every commit whose subject contains that identifier. Do not stop after the first. Read file contents with git show origin/";
     p += trunk;
     p += ":path. Do not read the working tree and do not read the local trunk branch. A stale checkout is not evidence. Graphite can close a pull request with merged false after the commit is on the remote trunk. That is not evidence the work is absent.\n";
-    p += "Set shipped true only when those commits fully meet the acceptance. A partial slice stays shipped false. When unsure, set shipped false. evidence is the origin commit subject or path, and it is empty when shipped is false.\n";
+    p += "The packet description is the acceptance criteria or the Remaining scope section when the issue has one. Set shipped true only when every listed commit together fully meets that text. A partial slice stays shipped false. A mention that appears only in docs, a changelog, or a todos/debt note is not remaining work. Production code, tests, schema, and migrations still count. When unsure, set shipped false. evidence lists each commit subject, and it is empty when shipped is false.\n";
     p += "Return one proposal per packet issue.\n";
     p += packet_line(packet_json);
     p
 }
 
 fn detail_prompt(packet_json) {
-    let p = "You read one shard of Linear issues. Do not edit files. Do not save issues. Do not list the team.\n";
+    let p = "You read one small set of Linear issues. Do not edit files. Do not save issues. Do not list the team. Do not open an identifier that is not in the packet.\n";
     p += guardrails_text();
-    p += "Call search_tool once, then get_issue with relations for every identifier in the packet. Return one details row per identifier. description_empty is true only when the description is empty or whitespace. description is the description clipped to 400 characters, or an empty string. blocked_by is an array of objects with identifier, status_type, and found. status_type is that blocker's Linear statusType in lowercase. found is false when that blocker issue does not exist.\n";
+    p += "Call search_tool once, then get_issue for every identifier in the packet. Return one details row per identifier.\n";
+    p += "When need_description is false, set description to an empty string and description_empty false. Do not copy the body.\n";
+    p += "When need_description is true, description_empty is true only when the description is empty or whitespace. Otherwise description starts at the first Remaining scope, Remaining work, or Acceptance section. When none of those sections exist, description is the first 400 characters. Clip description to 1200 characters.\n";
+    p += "Always return blocked_by from the issue relations, even when need_blockers is false. Each object has identifier, status_type, and found. status_type is that blocker's Linear statusType in lowercase. found is false when that blocker issue does not exist. Use an empty array only when the issue has no blockers.\n";
     p += packet_line(packet_json);
     p
 }
@@ -1011,11 +1273,13 @@ fn label_prompt(packet_json) {
 fn ship_skeptic_prompt(trunk, packet_json) {
     let p = "You check one shipped-but-open proposal. Do not edit.\n";
     p += guardrails_text();
-    p += "Inspect only the commit named in the proposal. Run git log -1 and git show for that commit on origin/";
+    p += "Inspect every commit named in the proposal evidence. Run git log -1 and git show for each of those commits on origin/";
     p += trunk;
-    p += ". Do not search the working tree. Do not open unrelated files. Return one verdict with identifier, accept, and evidence. Set accept true only when that commit is on origin/";
+    p += ". You may run one git grep on origin/";
     p += trunk;
-    p += " and fully meets the acceptance. A partial slice is accept false. Empty evidence is accept false.\n";
+    p += " for symbols the commit deletes. Do not read CI or GitHub Actions. Do not search the working tree. Return one verdict with identifier, accept, and evidence. Set accept true only when every named commit is on origin/";
+    p += trunk;
+    p += " and together they fully meet the acceptance in the packet description. A partial slice is accept false. A mention that appears only in docs, a changelog, or a todos/debt note is not remaining work. Production code, tests, schema, and migrations still count. Empty evidence is accept false.\n";
     p += packet_line(packet_json);
     p
 }
@@ -1158,11 +1422,56 @@ fn notes_md(notes) {
     s
 }
 
+fn split_actions(rows) {
+    let done = [];
+    let rest = [];
+    for row in rows {
+        if map_str(row, "kind") == "mark_done" {
+            done.push(row);
+        } else {
+            rest.push(row);
+        }
+    }
+    #{ done: done, rest: rest }
+}
+
+fn split_findings(rows) {
+    let priority = [];
+    let rest = [];
+    for row in rows {
+        if map_str(row, "kind") == "priority_missing" {
+            priority.push(row);
+        } else {
+            rest.push(row);
+        }
+    }
+    #{ priority: priority, rest: rest }
+}
+
+fn priority_section(rows) {
+    let s = "\n## Priority missing\n";
+    if rows.len() == 0 {
+        s += "\nNone.\n";
+        return s;
+    }
+    s += "\nThese open issues have priority 0. The workflow does not change priority.\n";
+    for row in rows {
+        s += "\n- ";
+        s += map_str(row, "identifier");
+    }
+    s += "\n";
+    s
+}
+
 fn report_md(header, notes, actions, findings) {
+    let act = split_actions(actions);
+    let found = split_findings(findings);
     let md = header;
     md += notes_md(notes);
-    md += section_rows("Actions", actions);
-    md += section_rows("Findings", findings);
+    md += section_rows("Done proposals", act.done);
+    md += section_rows("Actions", act.rest);
+    md += section_rows("Findings", found.rest);
+    md += priority_section(found.priority);
     md
 }
 
@@ -1382,7 +1691,7 @@ let list_schema = #{
             "items": #{
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["identifier", "url", "title", "priority", "status_type", "state_name", "labels", "cycle_id", "blocked_by", "description_empty"],
+                "required": ["identifier", "url", "title", "priority", "status_type", "state_name", "labels", "cycle_id", "blocked_by", "blocker_states", "description_empty"],
                 "properties": #{
                     "identifier": #{ "type": "string" },
                     "url": #{ "type": "string" },
@@ -1393,6 +1702,20 @@ let list_schema = #{
                     "labels": #{ "type": "array", "maxItems": 12, "items": #{ "type": "string" } },
                     "cycle_id": #{ "type": "string" },
                     "blocked_by": #{ "type": "array", "maxItems": 8, "items": #{ "type": "string" } },
+                    "blocker_states": #{
+                        "type": "array",
+                        "maxItems": 8,
+                        "items": #{
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["identifier", "status_type", "found"],
+                            "properties": #{
+                                "identifier": #{ "type": "string" },
+                                "status_type": #{ "type": "string" },
+                                "found": #{ "type": "boolean" },
+                            },
+                        },
+                    },
                     "description_empty": #{ "type": "boolean" },
                 },
             },
@@ -1475,25 +1798,72 @@ if only_issue != "" {
             output_schema: list_schema,
         });
     }
+    if cycle_ok {
+        list_jobs.push(#{
+            prompt: cycle_closed_prompt(team_id, team_label, cycle_id, MAX_CYCLE_CLOSED),
+            label: "list-cycle-closed",
+            capability_mode: "all",
+            output_schema: list_schema,
+        });
+    }
+    list_jobs.push(#{
+        prompt: blocked_prompt(team_id, team_label),
+        label: "list-blocked",
+        capability_mode: "all",
+        output_schema: list_schema,
+    });
 }
 let listed = parallel(list_jobs);
 let groups = [];
 let list_failed = 0;
+let cycle_raw = [];
+let cycle_failed = false;
+let cycle_truncated = false;
+let blocked_raw = [];
+let blocked_failed = false;
+let blocked_error = "";
+let slot_i = 0;
+let cycle_slot = -1;
+let blocked_slot = -1;
+if only_issue == "" {
+    blocked_slot = list_jobs.len() - 1;
+    if cycle_ok { cycle_slot = list_jobs.len() - 2; }
+}
 if type_of(listed) == "array" {
     for slot in listed {
         let list_map = agent_map(slot);
-        if list_map == () {
+        if slot_i == cycle_slot {
+            if list_map == () {
+                cycle_failed = true;
+            } else {
+                cycle_raw = as_array(map_get(list_map, "issues"));
+                cycle_truncated = map_bool(list_map, "truncated", false);
+            }
+        } else if slot_i == blocked_slot {
+            if list_map == () {
+                blocked_failed = true;
+            } else {
+                blocked_raw = as_array(map_get(list_map, "issues"));
+                blocked_error = map_str(list_map, "error");
+            }
+        } else if list_map == () {
             list_failed += 1;
         } else {
             groups.push(as_array(map_get(list_map, "issues")));
         }
+        slot_i += 1;
     }
 } else {
     list_failed = list_jobs.len();
+    if cycle_slot >= 0 { list_failed -= 1; }
+    if blocked_slot >= 0 { list_failed -= 1; }
+    cycle_failed = cycle_slot >= 0;
+    blocked_failed = blocked_slot >= 0;
 }
 if list_failed > 0 { log("list bands failed: " + list_failed.to_string()); }
 let kept = merge_listed(groups, only_issue, MAX_ISSUES);
-let issues = kept.issues;
+let issues = merge_blockers(kept.issues, blocked_raw);
+let cycle_kept = keep_cycle_closed(cycle_raw, cycle_id, MAX_CYCLE_CLOSED);
 
 let notes = [];
 if list_failed > 0 {
@@ -1503,10 +1873,35 @@ if map_bool(inventory_out, "truncated", false) {
     notes.push("collector truncated the open set before the script sort");
     log("collector truncated the open set before the script sort");
 }
+if kept.closed > 0 {
+    let closed_note = "script dropped " + kept.closed.to_string() + " completed, canceled, or duplicate issues";
+    notes.push(closed_note);
+    log(closed_note);
+}
 if kept.dropped > 0 {
-    let cap_note = "script kept " + MAX_ISSUES.to_string() + " issues and dropped " + kept.dropped.to_string();
+    let cap_note = "script kept " + MAX_ISSUES.to_string() + " open issues and dropped " + kept.dropped.to_string();
     notes.push(cap_note);
     log(cap_note);
+}
+if cycle_failed {
+    notes.push("cycle-closed list failed");
+    log("cycle-closed list failed");
+}
+if cycle_truncated || cycle_kept.dropped > 0 {
+    let cycle_note = "cycle-closed list kept " + cycle_kept.issues.len().to_string() + " and dropped " + cycle_kept.dropped.to_string();
+    notes.push(cycle_note);
+    log(cycle_note);
+} else {
+    log("cycle closed " + cycle_kept.issues.len().to_string());
+}
+if blocked_failed {
+    notes.push("blocked list failed");
+    log("blocked list failed");
+} else if blocked_error == "no_blocked_filter" {
+    notes.push("list tool has no blocked filter");
+    log("list tool has no blocked filter");
+} else {
+    log("blocked rows " + blocked_raw.len().to_string());
 }
 if !cycle_ok {
     notes.push("no current cycle; cycle actions omitted");
@@ -1520,8 +1915,9 @@ if behind < 0 {
     notes.push(behind_note);
     log(behind_note);
 }
-let detail_shards = shard_ids(issues, MAX_SHARD);
-log("detail shards " + detail_shards.len().to_string());
+let detail_plan_rows = detail_plan(issues, MAX_SHIPPED, MAX_UNLABELED);
+let detail_shards = shard_rows(detail_plan_rows, MAX_DETAIL_SHARD);
+log("detail targets " + detail_plan_rows.len().to_string() + " shards " + detail_shards.len().to_string());
 let detail_jobs = [];
 let shard_i = 0;
 for shard in detail_shards {
@@ -1558,6 +1954,7 @@ if detail_jobs.len() > 0 {
     }
     issues = merge_details(issues, flat);
 }
+issues = append_missing(issues, cycle_kept.issues);
 if team_labels.len() == 0 {
     notes.push("team has no labels; label proposals skipped");
     log("team has no labels; label proposals skipped");
