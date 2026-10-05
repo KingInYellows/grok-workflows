@@ -15,7 +15,8 @@ const MAX_CHANGES = 3;
 const LAYOUT_QUOTA = 4;
 const COMMAND_QUOTA = 5;
 const CHANGE_QUOTA = 3;
-const MAX_VERIFY = 12;
+// 8 + 8 + 3, so a full discovery fits and refill is not dead.
+const MAX_VERIFY = 19;
 
 let layout_schema = #{
     "type": "object", "required": ["items"],
@@ -77,6 +78,7 @@ let verdict_schema = #{
         "real": #{ "type": "boolean" },
         "reason": #{ "type": "string" },
         "evidence": #{ "type": "string" },
+        "flaw": #{ "type": "string" },
     },
 };
 
@@ -140,13 +142,6 @@ fn append_up_to(dst, src, n) {
     out
 }
 
-fn apply_quota(arr, n, label) {
-    if arr.len() > n {
-        log("Quota " + label + ": keeping " + n.to_string() + " of " + arr.len().to_string());
-    }
-    take_n(arr, n)
-}
-
 fn items_of(r) {
     if r == () { return []; }
     if r.success != true { return []; }
@@ -195,6 +190,24 @@ fn command_usable(it) {
 
 fn change_usable(it) {
     it != () && non_empty(it.title) && non_empty(it.evidence_file) && non_empty(it.evidence) && non_empty(it.verify_command)
+}
+
+
+fn item_label(kind, it) {
+    if it == () { return ""; }
+    if kind == "layout" { return trimmed(it.path); }
+    if kind == "command" { return trimmed(it.command); }
+    if kind == "change" { return trimmed(it.title); }
+    ""
+}
+
+fn log_extra(kind, arr) {
+    for it in as_array(arr) {
+        let label = item_label(kind, it);
+        if label != "" {
+            log("Dropped " + kind + ": " + label);
+        }
+    }
 }
 
 fn keep_usable(arr, kind) {
@@ -280,6 +293,8 @@ change_prompt += " the test runner, and package.json / Makefile / pyproject.toml
 change_prompt += " Do not run tests. Do not edit files.";
 change_prompt += " Prefer a leaf module that already has a colocated unit test. Prefer pure helpers over UI, auth, database, Docker, or migrations.";
 change_prompt += " Do not recommend editing node_modules, vendor, target, dist, lockfiles, generated files (*gen.ts, *_generated.*), or every package in a monorepo at once.";
+change_prompt += " Stop as soon as you have 3 qualifying candidates. Do not keep scanning the repository after that.";
+change_prompt += " For each candidate, open only that file, its colocated test, and one manifest or CI file that names the verify command.";
 change_prompt += " Report at most 3 items as {title, description, why_safe, files, verify_command, cwd, evidence_file, evidence}.";
 change_prompt += " why_safe must cite isolation you observed. verify_command must be a command you read from a manifest or runner, not invented";
 change_prompt += " (match the stack: npm test, cargo test, pytest, go test, make test, etc.).";
@@ -330,25 +345,31 @@ if change_items.len() > MAX_CHANGES {
 
 log("Discovered layout=" + layout_items.len().to_string() + " commands=" + command_items.len().to_string() + " changes=" + change_items.len().to_string());
 
-let layout_rest = skip_n(layout_items, LAYOUT_QUOTA);
-let command_rest = skip_n(command_items, COMMAND_QUOTA);
-let change_rest = skip_n(change_items, CHANGE_QUOTA);
-layout_items = apply_quota(layout_items, LAYOUT_QUOTA, "layout");
-command_items = apply_quota(command_items, COMMAND_QUOTA, "command");
-change_items = apply_quota(change_items, CHANGE_QUOTA, "change");
+let layout_extra = skip_n(layout_items, LAYOUT_QUOTA);
+let command_extra = skip_n(command_items, COMMAND_QUOTA);
+let change_extra = skip_n(change_items, CHANGE_QUOTA);
+layout_items = take_n(layout_items, LAYOUT_QUOTA);
+command_items = take_n(command_items, COMMAND_QUOTA);
+change_items = take_n(change_items, CHANGE_QUOTA);
 
 let leftover = MAX_VERIFY - layout_items.len() - command_items.len() - change_items.len();
 if leftover > 0 {
-    change_items = append_up_to(change_items, change_rest, leftover);
+    change_items = append_up_to(change_items, change_extra, leftover);
+    change_extra = skip_n(change_extra, leftover);
     leftover = MAX_VERIFY - layout_items.len() - command_items.len() - change_items.len();
 }
 if leftover > 0 {
-    command_items = append_up_to(command_items, command_rest, leftover);
+    command_items = append_up_to(command_items, command_extra, leftover);
+    command_extra = skip_n(command_extra, leftover);
     leftover = MAX_VERIFY - layout_items.len() - command_items.len() - change_items.len();
 }
 if leftover > 0 {
-    layout_items = append_up_to(layout_items, layout_rest, leftover);
+    layout_items = append_up_to(layout_items, layout_extra, leftover);
+    layout_extra = skip_n(layout_extra, leftover);
 }
+log_extra("change", change_extra);
+log_extra("command", command_extra);
+log_extra("layout", layout_extra);
 
 log("Verify queue layout=" + layout_items.len().to_string() + " commands=" + command_items.len().to_string() + " changes=" + change_items.len().to_string());
 
@@ -402,6 +423,9 @@ if claims.len() == 0 {
 
 if claims.len() > MAX_VERIFY {
     log("Truncated claims from " + claims.len().to_string() + " to " + MAX_VERIFY.to_string() + " before verify");
+    for c in skip_n(claims, MAX_VERIFY) {
+        log("Dropped " + c.kind + ": " + trimmed(c.statement));
+    }
     claims = take_n(claims, MAX_VERIFY);
 }
 
@@ -410,6 +434,9 @@ if remaining < claims.len() {
     let keep = remaining;
     if keep < 0 { keep = 0; }
     log("Budget remaining " + remaining.to_string() + "; verifying only " + keep.to_string() + " claims");
+    for c in skip_n(claims, keep) {
+        log("Dropped for budget " + c.kind + ": " + trimmed(c.statement));
+    }
     claims = take_n(claims, keep);
 }
 
@@ -444,8 +471,11 @@ for c in claims {
     vp += " You are a cold subagent. Use only read-only tools (read_file, list_dir, grep). Do not run tests or lint.";
     vp += " Claim JSON:\n";
     vp += encoded;
-    vp += "\nSet real=true ONLY if you opened the cited file (or the path it names) and the contents support the statement.";
-    vp += " Quote the supporting snippet in evidence. If the file is missing, the quote is absent, the command is not in the scripts/CI file,";
+    vp += "\nOpen only the cited file and at most one supporting file (the path the claim names, or the colocated test). Do not explore the rest of the repository.";
+    vp += "\nSet real=true ONLY if every material clause of the statement and payload is supported by those files.";
+    vp += " A mostly-true claim is not real: if any clause is false, overstated, or unsupported, set real=false and put that clause in flaw.";
+    vp += " Leave flaw empty only when the whole claim holds. Quote the supporting snippet in evidence.";
+    vp += " If the file is missing, the quote is absent, the command is not in the scripts/CI file,";
     vp += " or the path does not exist, set real=false. Default real=false when unsure.";
     vjobs.push(#{
         prompt: vp,
@@ -468,7 +498,13 @@ for v in verdicts {
     let accepted = false;
     if v != () && v.success == true && v.output != () {
         if v.output.real == true && v.output.evidence != () && trimmed(v.output.evidence) != "" {
-            accepted = true;
+            let flawed = false;
+            if v.output.flaw != () && trimmed(v.output.flaw) != "" { flawed = true; }
+            if flawed {
+                log("Rejected claim with a false clause: " + trimmed(v.output.flaw));
+            } else {
+                accepted = true;
+            }
         }
     }
     if accepted {
@@ -550,6 +586,8 @@ md += "- Read-only: no edits, and test/lint commands were not executed.\n";
 md += "- Unverified scanner claims are omitted, not implied true.\n";
 md += "- Discovery fan-out is 3; verification is capped at " + MAX_VERIFY.to_string() + " claims.\n";
 md += "- Verify quotas: " + LAYOUT_QUOTA.to_string() + " layout, " + COMMAND_QUOTA.to_string() + " commands, " + CHANGE_QUOTA.to_string() + " changes; unused slots refill change, then commands, then layout.\n";
+md += "- Claims that do not fit the verify cap are logged by name and omitted here.\n";
+md += "- Each verifier opens the cited file and at most one supporting file. A claim with any false clause is omitted.\n";
 
 let report_path = write_scratch_file("repo-map.md", md);
 complete(#{
