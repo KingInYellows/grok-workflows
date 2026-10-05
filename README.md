@@ -2,7 +2,7 @@
 
 Personal library of [Grok Build](https://x.ai/cli) workflow files (`.rhai`).
 
-Grok loads user-level workflows from real files in `~/.grok/workflows/` (not a symlink). This git repo is the source of truth; copy `*.rhai` into the config dir after pulling.
+Grok loads user-level workflows from real files in `~/.grok/workflows/` (not a symlink). This git repo is the source of truth. After a pull, run the sync script to copy `*.rhai` into the config dirs.
 
 ## Workflows
 
@@ -40,11 +40,33 @@ Grok loads user-level workflows from real files in `~/.grok/workflows/` (not a s
 
 Grok only executes `*.rhai` files in those config directories. Do not symlink the config dir at the git repo; the harness may not load workflows through a directory symlink.
 
+## Sync repo → Grok config
+
+From WSL:
+
+```bash
+cd ~/projects/grok-workflows
+./sync-workflows.sh            # copy *.rhai into WSL + Windows grok homes
+./sync-workflows.sh --dry-run  # show what would change
+./sync-workflows.sh --prune    # also delete dest *.rhai files not in this repo
+```
+
+From Windows PowerShell:
+
+```powershell
+cd \\wsl$\Ubuntu-24.04\home\kinginyellow\projects\grok-workflows
+.\sync-workflows.ps1
+.\sync-workflows.ps1 -DryRun
+.\sync-workflows.ps1 -Prune
+```
+
+`--prune` / `-Prune` is opt-in so a workflow created with `/create-workflow` is not deleted until you copy it into git.
+
 ## Adding a workflow
 
 1. In a Grok session: `/create-workflow ...` (saves under `~/.grok/workflows/`).
 2. Copy the new `.rhai` into this git repo, commit, and push.
-3. If you use Windows grok.exe too, copy the same file into `%USERPROFILE%\.grok\workflows\`.
+3. Run `./sync-workflows.sh` or `.\sync-workflows.ps1` so every Grok home matches the repo.
 
 Launch with `/workflow <name>` or `/<name>` when the name is unique.
 
