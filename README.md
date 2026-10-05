@@ -2,7 +2,7 @@
 
 Personal library of [Grok Build](https://x.ai/cli) workflow files (`.rhai`).
 
-Grok loads user-level workflows from `~/.grok/workflows/`. On this machine that path is a symlink to this repo, so saved workflows stay in git instead of Google Drive.
+Grok loads user-level workflows from real files in `~/.grok/workflows/` (not a symlink). This git repo is the source of truth; copy `*.rhai` into the config dir after pulling.
 
 ## Workflows
 
@@ -33,17 +33,18 @@ Grok loads user-level workflows from `~/.grok/workflows/`. On this machine that 
 ## Local layout
 
 ```text
-~/projects/grok-workflows     # this git repo
-~/.grok/workflows             # symlink -> ~/projects/grok-workflows
+~/projects/grok-workflows              # this git repo (source of truth)
+~/.grok/workflows/*.rhai               # WSL Grok 1.0.46 config copies (real files)
+%USERPROFILE%\.grok\workflows\*.rhai  # Windows grok.exe config copies
 ```
 
-Grok only executes `*.rhai` files in that directory. `README.md` and `.git` are ignored.
+Grok only executes `*.rhai` files in those config directories. Do not symlink the config dir at the git repo; the harness may not load workflows through a directory symlink.
 
 ## Adding a workflow
 
-1. In a Grok session: `/create-workflow ...` (saves under `~/.grok/workflows/`, which is this repo).
-2. Or copy a `.rhai` file into this directory.
-3. Commit and push.
+1. In a Grok session: `/create-workflow ...` (saves under `~/.grok/workflows/`).
+2. Copy the new `.rhai` into this git repo, commit, and push.
+3. If you use Windows grok.exe too, copy the same file into `%USERPROFILE%\.grok\workflows\`.
 
 Launch with `/workflow <name>` or `/<name>` when the name is unique.
 
