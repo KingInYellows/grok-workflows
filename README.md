@@ -50,7 +50,5 @@ Launch with `/workflow <name>` or `/<name>` when the name is unique.
 
 ## Notes
 
-- Started from live WSL `~/.grok/workflows/` (2026-10-05), then synced newer files from `G:\My Drive\AI-Tools-and-Prompts\Grok Workflows\wsl-home`.
-- 2026-10-05 WSL A8 sync: pushed live `linear-cycle-deliver`, `linear-organize`, and `workspace-map`. Kept GitHub copies of `branch-review`, `class-audit`, `preflight-gate`, and `repo-map` (later revisions from the other machine).
-- GitHub is the source of truth. The Drive folder is a backup only.
+- GitHub is the source of truth.
 - Project-scoped workflows can still live in a repo's `.grok/workflows/` if they should not follow you everywhere.
