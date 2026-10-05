@@ -13,7 +13,8 @@ Grok loads user-level workflows from real files in `~/.grok/workflows/` (not a s
 | `/dependabot-pr-triage` | Read-only triage of open Dependabot (and optional Renovate) PRs: MERGE / HOLD / REJECT. Never merges, approves, or comments |
 | `/docs-refresh` | Evidence-based documentation reconciliation for one Git repository |
 | `/export-workflows` | Read Grok workflows and emit a host-agnostic universal template |
-| `/goal-planning` | One-shot meta-planner that writes exactly two `docs/goals` files for the next long-horizon goal |
+| `/goal-execute` | Implement `docs/goals/GOAL_NEXT.md`, commit when the terminal allows it, then accept that commit |
+| `/goal-planning` | One-shot meta-planner that writes exactly two `docs/goals` files. The companion is `/goal-execute` |
 | `/graphite-pr-review` | Review one Graphite PR, refute findings, plan repairs, then optionally commit and submit |
 | `/graphite-stack-merge` | Land a Graphite stack via Graphite merge or merge-when-ready. Never uses `gh pr merge` |
 | `/graphite-stack-review` | Review and remediate a Graphite PR stack bottom-up while monitoring CI and review feedback |
