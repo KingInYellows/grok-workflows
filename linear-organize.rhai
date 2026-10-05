@@ -1099,6 +1099,7 @@ fn self_check() {
     if !blocked_prompt("team", "medianest").contains("no_blocked_filter") { return "blocked prompt"; }
     if !shipped_prompt("main", "[]").contains("every commit") { return "every commit"; }
     if !detail_prompt("[]").contains("Always return blocked_by") { return "detail blockers"; }
+    if !label_skeptic_prompt("{}").contains("ASCII case does not matter") { return "label skeptic case"; }
     let enriched = merge_blockers([
         sample_issue("A", "started", 2, "c1", ["Bug"], [], false),
     ], [
@@ -1301,7 +1302,7 @@ fn ship_skeptic_prompt(trunk, packet_json) {
 fn label_skeptic_prompt(packet_json) {
     let p = "You are a read-only skeptic for label proposals. Do not edit.\n";
     p += guardrails_text();
-    p += "Do not call any tool. Return one verdict per proposal with identifier, accept, and evidence. Set accept true only when the label is in the packet and the evidence quotes that label as its own word. A prefix of a longer word is accept false. Otherwise accept false.\n";
+    p += "Do not call any tool. Return one verdict per proposal with identifier, accept, and evidence. Set accept true only when the label is in the packet and the evidence quotes that label as its own word. ASCII case does not matter: test quotes Test. A prefix of a longer word is accept false. Otherwise accept false.\n";
     p += packet_line(packet_json);
     p
 }
