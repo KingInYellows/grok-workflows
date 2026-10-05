@@ -310,11 +310,36 @@ fn restore_goal_rel(as_of, slug) {
     rel + ".md"
 }
 
-fn verify_goal_files(git_root, goal_rel, next_rel, label, schema) {
+fn body_witness_parts(body) {
+    let s = trimmed(body);
+    let n = s.len();
+    if n == 0 { return #{ head: "", tail: "" }; }
+    if n <= 160 { return #{ head: s, tail: s }; }
+    #{
+        head: s.sub_string(0, 80),
+        tail: s.sub_string(n - 80, 80),
+    }
+}
+
+fn verify_goal_files(git_root, goal_rel, next_rel, goal_body, next_body, label, schema) {
+    let goal_w = body_witness_parts(goal_body);
+    let next_w = body_witness_parts(next_body);
+    let goal_head = map_str(goal_w, "head");
+    let goal_tail = map_str(goal_w, "tail");
+    let next_head = map_str(next_w, "head");
+    let next_tail = map_str(next_w, "tail");
+    if non_empty(goal_head) != true || non_empty(next_head) != true { return false; }
     let vp = "";
     vp += "You are a cold subagent. Independently confirm two files exist under the git root. ";
-    vp += "MUST open each path with read_file. exists=true only if you opened the file and it is non-empty. ";
-    vp += "Do not write. Do not create files. Fail closed: missing or empty means exists=false. ";
+    vp += "MUST open each path with read_file. ";
+    vp += "goal_exists=true only if you opened file 1, it is non-empty, it contains both goal witnesses as plain text, and it contains the heading '## As-of (not acceptance)'. ";
+    vp += "next_exists=true only if you opened file 2, it is non-empty, and it contains both next witnesses as plain text. ";
+    vp += "A pre-existing file that lacks either witness is exists=false. The slug alone is not enough. ";
+    vp += "Do not write. Do not create files. Fail closed: missing, empty, or a missing witness means exists=false. ";
+    vp += "Goal witness start:\n" + goal_head + "\n";
+    vp += "Goal witness end:\n" + goal_tail + "\n";
+    vp += "Next witness start:\n" + next_head + "\n";
+    vp += "Next witness end:\n" + next_tail + "\n";
     vp += "Hard forbid: .env, *.pem, *.key, tfvars, terraform.tfstate, auth.json, secrets/. ";
     vp += "Do not commit, push, or edit any file. ";
     vp += "Git root: " + git_root + "\n";
@@ -406,6 +431,101 @@ fn drop_first(hay, phrase) {
     hay
 }
 
+fn command_token_value(token) {
+    let t = trimmed(token);
+    if t == "" { return ""; }
+    if starts_with(t, "-") != true { return t; }
+    let i = 0;
+    while i < t.len() {
+        if t.sub_string(i, 1) == "=" {
+            if i + 1 < t.len() { return t.sub_string(i + 1, t.len() - i - 1); }
+            return "";
+        }
+        i += 1;
+    }
+    ""
+}
+
+fn last_command_token(command) {
+    let s = trimmed(command);
+    let token = "";
+    let current = "";
+    let i = 0;
+    while i < s.len() {
+        let ch = s.sub_string(i, 1);
+        if ch == " " || ch == "\t" {
+            let value = command_token_value(current);
+            if value != "" { token = value; }
+            current = "";
+        } else {
+            current += ch;
+        }
+        i += 1;
+    }
+    let value = command_token_value(current);
+    if value != "" { token = value; }
+    token
+}
+
+fn quote_names_command(command, quote) {
+    let token = last_command_token(command);
+    if token == "" { return false; }
+    contains_str(quote, token)
+}
+
+fn looks_dated_goal(rel) {
+    let rest = trimmed(rel);
+    if starts_with(rest, "docs/goals/") != true { return false; }
+    rest = drop_first(rest, "docs/goals/");
+    if rest.len() < 11 { return false; }
+    let i = 0;
+    while i < 10 {
+        let ch = rest.sub_string(i, 1);
+        if i == 4 || i == 7 {
+            if ch != "-" { return false; }
+        } else if ch < "0" || ch > "9" {
+            return false;
+        }
+        i += 1;
+    }
+    rest.sub_string(10, 1) == "-"
+}
+
+fn shell_stop_block() {
+    let s = "";
+    s += "If the shell tool is missing, denied, or errors, stop searching for a shell. ";
+    s += "Do not search memory, tool schemas, hook notes, or another executor. ";
+    s += "Do not call search_tool or use_tool to find a shell. ";
+    s += "read_file and directory listings remain allowed for the fallbacks this prompt already names. ";
+    s
+}
+
+fn self_check() {
+    let usage = "Usage: scripts/verify.sh [--component COMPONENT] [--base-ref SHA] [--history-base SHA --history-head SHA]";
+    if quote_names_command("scripts/verify.sh --component python", usage) { return "usage quote accepted"; }
+    if quote_names_command("scripts/verify.sh --component=python", usage) { return "equals usage accepted"; }
+    if quote_names_command("scripts/verify.sh --component docs", "all | python | docs | security") != true {
+        return "docs token rejected";
+    }
+    if looks_dated_goal("docs/goals/2026-10-05-reconcile-private-repo-scope.md") != true { return "dated path missed"; }
+    if looks_dated_goal("docs/goals/reconcile-private-repo-scope.md") { return "dateless path looked dated"; }
+    if looks_dated_goal("docs/goals/GOAL_NEXT.md") { return "goal next looked dated"; }
+    let short_w = body_witness_parts("alpha");
+    if map_str(short_w, "head") != "alpha" || map_str(short_w, "tail") != "alpha" { return "short witness"; }
+    let pad = "";
+    let i = 0;
+    while i < 160 {
+        pad += "x";
+        i += 1;
+    }
+    let long_w = body_witness_parts("HEADMARK" + pad + "TAILMARK");
+    if contains_str(map_str(long_w, "head"), "HEADMARK") != true { return "witness head"; }
+    if contains_str(map_str(long_w, "tail"), "TAILMARK") != true { return "witness tail"; }
+    if contains_str(map_str(long_w, "head"), "TAILMARK") { return "witness overlapped"; }
+    if map_str(body_witness_parts(""), "head") != "" { return "empty witness"; }
+    ""
+}
+
 fn weak_quote(command, quote) {
     if contains_str(quote, "##") != true { return false; }
     let body = strip_path_prefix(command);
@@ -429,6 +549,7 @@ fn usable_command(it) {
     if contains_str(cmd, "<") { return false; }
     if non_empty(it.quote) != true { return false; }
     if weak_quote(cmd, trimmed(it.quote)) { return false; }
+    if quote_names_command(cmd, trimmed(it.quote)) != true { return false; }
     true
 }
 
@@ -539,6 +660,12 @@ if args != () {
 
 log("goal-planning horizon=" + horizon_value + " max_evidence=" + max_evidence.to_string() + " exclude=" + exclude.len().to_string());
 
+let check_error = self_check();
+if check_error != "" {
+    log("goal-planning self-check failed: " + check_error);
+    complete(#{ summary: "self-check failed: " + check_error, wrote: false });
+}
+
 phase("Ideation");
 let idea_prompt = "";
 idea_prompt += "You are a cold subagent. Ideate the planning context for ONE git root. Use tools; do not answer from memory. ";
@@ -554,6 +681,9 @@ idea_prompt += "If those git commands cannot run, read .git/HEAD when .git is a 
 idea_prompt += "If args.as_of is empty, set as_of to the commit date (YYYY-MM-DD) of the trunk this plan implements from, not wall clock and not a stale local HEAD. ";
 idea_prompt += "Resolve trunk with `git rev-parse --abbrev-ref origin/HEAD`, then origin/main, then origin/master, then local HEAD. ";
 idea_prompt += "Run `git log -1 --format=%cs` on that ref. Set trunk_ref to the ref you dated. If git log cannot run, leave as_of empty. Do not use a reflog timestamp. ";
+idea_prompt += shell_stop_block();
+idea_prompt += "One missing or denied git command is final. Do not try a second shell. ";
+idea_prompt += "If git status cannot run, put 'dirty=false was not observed' in heat. ";
 idea_prompt += "Read AGENTS.md, AGENTS.project.md, README.md if present. List heat notes (open work, dirty tree, named branches) you actually observed. ";
 idea_prompt += "Empty heat is valid ONLY after you inspected git status and those files. ";
 idea_prompt += "Return git_root, branch, head (full git rev-parse HEAD, or the sha from .git/HEAD), dirty, refused, roots, heat, as_of, trunk_ref.";
@@ -697,7 +827,7 @@ log("Brainstorm kept " + candidates.len().to_string() + " candidates");
 
 phase("Research");
 let research_lenses = [
-    "Open PRs, Graphite stack, required checks, CI jobs. This repo is private: never curl github.com and never call search_tool or use_tool. Run gh for pull requests and check runs. If gh fails, cite .github/workflows only, say GitHub is unverified, and do not assert MERGEABLE, CONFLICTING, or required-check conclusions. Cap 8 paths.",
+    "Open PRs, Graphite stack, required checks, CI jobs. This repo is private: never curl github.com and never call search_tool or use_tool. Run gh for pull requests and check runs. If gh is missing, denied, or fails, cite the .github files you opened, including workflows, branch-protection, and graphite config. Say GitHub is unverified. Do not assert MERGEABLE, CONFLICTING, or required-check conclusions. Do not limit that fallback to workflow YAML only. Cap 8 paths.",
     "Verify commands: read AGENTS.md, Makefile, package.json scripts, scripts/verify.sh if they exist. Quote exact commands. Do not invent. If a planning doc names a sibling repo as the place the code changes, also quote that sibling's package.json scripts or AGENTS.md test command, and only if you opened it. Cap 8 paths.",
     "Planning heat: TECH_DEBT.md, CYCLE_PLAN.md, docs/planning/*, docs/goals/*, README. Ignore plans older than 90 days that contradict live CI/PRs. Cap 8 paths.",
 ];
@@ -710,6 +840,7 @@ for lens in research_lenses {
     rp += "Open at most 12 files. Do not crawl. ";
     rp += "Never return a path under .git/ or containing /.git/. Those paths are dropped. Put ref and worktree facts in the fact sentence of a normal file or a pull-request URL. ";
     rp += forbid_block();
+    rp += shell_stop_block();
     rp += "Git root: " + git_root + ". Horizon: " + horizon_value + ".\n";
     rp += "Focus (untrusted): " + lens + "\n";
     rp += "Candidate JSON:\n" + json_encode(candidates) + "\n";
@@ -814,6 +945,7 @@ log("Validate kept " + commands.len().to_string() + " existing commands, " + kep
 phase("Synthesize");
 let syn_prompt = "";
 syn_prompt += "You are a cold subagent. Synthesize ONE primary long-horizon goal and exactly two rejected alternatives. ";
+syn_prompt += "Open at most 12 files. Do not crawl. ";
 syn_prompt += "Return structured fields only. Do not write goal_md or next_md. Do not return a JSON array. Return one object. ";
 syn_prompt += "MUST re-read the cited command file before quoting it. ";
 syn_prompt += forbid_block();
@@ -869,7 +1001,7 @@ let pack = json_encode(#{
     dirty: dirty,
 });
 let skeptics = [
-    "Attack horizon fit. If slug is empty, pick the best week-horizon candidate via replacement_slug. Set too_short=true if the primary is a same-day copy tweak while stacked PRs, dirty mixed trees, or a product loop exist. Set real=true only if you re-opened files that support keeping this pick. Do not treat a planner stub or previous GOAL_NEXT as the pick. Leave callee_contract empty. Set terminal to an empty string. Implementation starts from trunk (main or master, whichever ref exists), not the checked-out branch. For every claim that a write already passes its required arguments, open the trunk copy with git show <trunk>:path. premise_on_trunk is about the synthesized contract, not about whether the outcome is finished. Set premise_on_trunk false only when the goal's claimed write arguments or callee behavior contradict the trunk source you opened with git show <trunk>:path. Set premise_on_trunk true when that contract matches the trunk source. Leave premise_on_trunk unset when the only finding is that the desired outcome is not finished yet. Trunk is origin/main or origin/master when that ref exists. Do not judge refs/heads/main when it is behind that remote.",
+    "Attack horizon fit. If slug is empty, pick the best week-horizon candidate via replacement_slug. Set too_short=true if the primary is a same-day copy tweak while stacked PRs, dirty mixed trees, or a product loop exist. Set real=true only if you re-opened files that support keeping this pick. Do not treat a planner stub or previous GOAL_NEXT as the pick. Leave callee_contract empty. Set terminal to an empty string. Implementation starts from trunk (main or master, whichever ref exists), not the checked-out branch. For every claim that a write already passes its required arguments, open the trunk copy with git show <trunk>:path. premise_on_trunk is about the synthesized contract, not about whether the outcome is finished. Set premise_on_trunk false only when the goal's claimed write arguments or callee behavior contradict the trunk source you opened with git show <trunk>:path. Set premise_on_trunk true when that contract matches the trunk source. Leave premise_on_trunk unset when the only finding is that the desired outcome is not finished yet. Trunk is origin/main or origin/master when that ref exists. Do not judge refs/heads/main when it is behind that remote. If git show cannot run, leave premise_on_trunk unset. A missing or denied shell is not a successful trunk check. Do not search for another executor.",
     "Attack done-when and evidence. A runner counts when you opened the quoted line and it is a real command in the changing package's AGENTS.md, Makefile, package.json, or scripts/verify.sh, or in the repo-root copy of those files when the quote says how to test that package. Set real=false if the command is UNKNOWN, invented, or the quote does not match the opened line. Set real=false if the runner does not execute or read the file the outcome changes. Set real=false if the outcome's new assertion is already true on trunk. If done_when_command is EVIDENCE, set real=true only when you opened done_when_source, the quote is present, and that checklist item is still open on trunk. Set real=false when the quote is missing or the box is already checked. Do not reject EVIDENCE only because the suite never opens a live row. Set real=true when the runner quote matches, the runner reaches the file the outcome changes, and you opened a current file showing that assertion is still false. A suite that stays green today is the runner, not proof the outcome already holds. Do not set real=false only because the new assertion is absent. A command in this git root does not prove a sibling-repo change. A substring or name ban is a fence. If the outcome is one shared record, row, or store, set real=false unless done-when asserts the write's required arguments and a test double that drops them would fail. Put those argument names in callee_contract. If you cannot find them, set callee_contract to UNKNOWN plus the file to open. Do not set too_short for a wrong package. too_short is only for a horizon that is too small. If slug is empty, set real=false and name a candidate replacement_slug that has a file-backed runner. Set terminal to an empty string.",
     "Attack callee contract and terminal state. If in_scope pins, launches, or speaks a protocol to another program, open that program's source and set real=true only when callee_contract quotes its deadlines, the env it reads, and the argv flags whose absence changes a hash. A fast fake success does not prove a deadline or a child env. If you cannot open the callee, set real=false and callee_contract to UNKNOWN plus the path you tried. If the outcome is one shared record, row, or store, callee_contract must name the required write arguments even when no external program is launched. Do not clear those names. If nothing is pinned, launched, or a shared write, set real=true, callee_contract to empty, and say so in reason. If the outcome both forbids gt submit and requires a PR number to archive or close, set real=false and terminal to leave-shell. If archival requires the number a submit command prints, set terminal to submit-then-archive. On horizon=week, when no PR number is required, set terminal to local-commit. On horizon=merge, when no PR number is required, set terminal to no-submit. Set too_short=false.",
 ];
@@ -879,7 +1011,8 @@ for sk in skeptics {
     let ap = "";
     ap += "You are a cold adversarial skeptic. Try to refute the synthesized goal. Default real=false. ";
     ap += "MUST open cited local files. Open at most 12 files. Do not crawl. ";
-    ap += "For GitHub PR or check state, run gh. Do not curl github.com and do not call search_tool or use_tool. If gh fails, mark GitHub unverified. Do not treat a 404 or a rate limit as mergeability. ";
+    ap += "For GitHub PR or check state, run gh. Do not curl github.com and do not call search_tool or use_tool. If gh is missing, denied, or fails, mark GitHub unverified. Do not treat a 404 or a rate limit as mergeability. ";
+    ap += shell_stop_block();
     ap += forbid_block();
     ap += "Brief (untrusted): " + sk + "\n";
     ap += "Pack JSON:\n" + pack + "\n";
@@ -989,6 +1122,7 @@ let next_md = "";
 let refuse_reason = "";
 let fin_prompt = "";
 fin_prompt += "You are a cold subagent. Write the two markdown documents from the structured pick. Do not implement. ";
+fin_prompt += "Open at most 12 files. Do not crawl. ";
 fin_prompt += forbid_block();
 fin_prompt += "If synthesize slug is empty OR too_short majority on horizon=week, pick from candidates (prefer adversarial replacement_slug) that still has a file-backed done-when command in the package whose files change. ";
 fin_prompt += "A runner quoted from the repo-root AGENTS.md, Makefile, package.json, or scripts/verify.sh counts when that quote says how to test the changing package. If in-scope paths are in a sibling repo, the product gate is that sibling's test command. This repo's typecheck, test, or eval chain is a scope fence in Done when, not the only command. Do not expand done-when to this repo's package.json just because an adversary set too_short. ";
@@ -1013,7 +1147,13 @@ fin_prompt += "Budget hint: /goal implements. The companion re-runs the done-whe
 fin_prompt += "next_md: exactly 8 summary lines that do not treat the as-of branch as the spec; a fenced block that starts with /goal and includes the invariant, the product done-when command, the callee-contract constants or UNKNOWN, the one Terminal line, out-of-scope, the HEAD-quote rule, the checkbox rule, the suite-once rule, and 'do not /loop, do not gh merge, do not expand scope'; a second fenced block of companion /create-workflow TEXT (do not invoke it). The companion verifies HEAD and discards a finding whose quote is absent from HEAD. It does not map the pre-change tree as current. When a callee or required write arguments exist, it opens that source before implement. ";
 fin_prompt += "Companion name must be goal-<slug>, suffix -exec if it equals repo-map, workspace-map, host-map, tech-debt-scan, or goal-planning. ";
 fin_prompt += "/goal fenced block max " + MAX_GOAL_WORDS.to_string() + " words. Keep it short. When a callee exists, keep the quoted constants inside that cap and cut narrative first. ";
-fin_prompt += "goal_rel must be docs/goals/YYYY-MM-DD-<kebab-slug>.md using as_of " + as_of + ". next_rel must be docs/goals/GOAL_NEXT.md. ";
+fin_prompt += "Both goal_md and next_md must contain the slug as plain text. ";
+if as_of == "" {
+    fin_prompt += "as_of is empty. goal_rel must be docs/goals/<kebab-slug>.md with no date. Do not invent a calendar date. ";
+} else {
+    fin_prompt += "goal_rel must be docs/goals/" + as_of + "-<kebab-slug>.md. Do not use a different date. ";
+}
+fin_prompt += "next_rel must be docs/goals/GOAL_NEXT.md. ";
 fin_prompt += "Pack JSON:\n" + pack + "\n";
 fin_prompt += "Adversarial notes JSON:\n" + json_encode(#{
     usable_votes: usable_votes,
@@ -1100,6 +1240,13 @@ if non_empty(slug) != true {
     log("Empty slug; not writing goals");
 } else {
     if companion == "" || companion == "goal-" { companion = companion_name_for(slug); }
+    if as_of == "" && looks_dated_goal(goal_rel) {
+        log("Finalize invented a date while as_of is empty; using dateless path");
+        goal_rel = restore_goal_rel("", slug);
+    } else if as_of != "" && starts_with(goal_rel, "docs/goals/" + as_of + "-") != true {
+        log("Finalize goal_rel does not use as_of; restoring constructed path");
+        goal_rel = restore_goal_rel(as_of, slug);
+    }
     if docs_goals_rel_ok(goal_rel) != true {
         log("Finalize goal_rel was outside docs/goals/; restoring constructed path");
         goal_rel = restore_goal_rel(as_of, slug);
@@ -1128,6 +1275,7 @@ out_prompt += "You are a cold subagent. Your assigned deliverable is to write EX
 out_prompt += "This write is authorized: /goal-planning Output must create those two docs/goals files. ";
 out_prompt += "Use the Write tool (or search_replace with empty old_string). Create docs/goals/ if missing. Overwrite GOAL_NEXT.md. ";
 out_prompt += "If Write or search_replace are denied by policy, do not retry more than once and do not loop. Set wrote_goal and wrote_next to false. ";
+out_prompt += "A denied Write or search_replace is final. Do not read hook notes, memory, or another tool to write the files. ";
 out_prompt += "Do not commit, push, gt submit, or gh merge. Do not edit source, tests, CI, .rhai, or any path outside docs/goals/. ";
 out_prompt += "Hard forbid: .env, *.pem, *.key, tfvars, terraform.tfstate, auth.json, secrets/. ";
 out_prompt += "Git root: " + git_root + "\n";
@@ -1163,7 +1311,7 @@ if extra.len() > 0 {
 }
 
 if wrote == true {
-    let verified = verify_goal_files(git_root, goal_rel, next_rel, "output:verify", verify_schema);
+    let verified = verify_goal_files(git_root, goal_rel, next_rel, goal_md, next_md, "output:verify", verify_schema);
     if verified != true || extra.len() > 0 {
         wrote = false;
         write_denied = true;
@@ -1182,7 +1330,7 @@ if wrote != true {
         msg += ", then resume this run.";
         log(msg);
         await_user("verification", msg);
-        let verified = verify_goal_files(git_root, goal_rel, next_rel, "output:verify-after-pause", verify_schema);
+        let verified = verify_goal_files(git_root, goal_rel, next_rel, goal_md, next_md, "output:verify-after-pause", verify_schema);
         if verified == true { wrote = true; }
     }
 }
