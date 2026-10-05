@@ -310,15 +310,36 @@ fn restore_goal_rel(as_of, slug) {
     rel + ".md"
 }
 
-fn verify_goal_files(git_root, goal_rel, next_rel, marker, label, schema) {
-    if non_empty(marker) != true { return false; }
+fn body_witness_parts(body) {
+    let s = trimmed(body);
+    let n = s.len();
+    if n == 0 { return #{ head: "", tail: "" }; }
+    if n <= 160 { return #{ head: s, tail: s }; }
+    #{
+        head: s.sub_string(0, 80),
+        tail: s.sub_string(n - 80, 80),
+    }
+}
+
+fn verify_goal_files(git_root, goal_rel, next_rel, goal_body, next_body, label, schema) {
+    let goal_w = body_witness_parts(goal_body);
+    let next_w = body_witness_parts(next_body);
+    let goal_head = map_str(goal_w, "head");
+    let goal_tail = map_str(goal_w, "tail");
+    let next_head = map_str(next_w, "head");
+    let next_tail = map_str(next_w, "tail");
+    if non_empty(goal_head) != true || non_empty(next_head) != true { return false; }
     let vp = "";
     vp += "You are a cold subagent. Independently confirm two files exist under the git root. ";
-    vp += "MUST open each path with read_file. exists=true only if you opened the file, it is non-empty, and the body contains the marker as plain text. ";
-    vp += "A pre-existing file that does not contain the marker is exists=false. ";
-    vp += "Do not write. Do not create files. Fail closed: missing, empty, or missing marker means exists=false. ";
-    vp += "Marker: " + marker + "\n";
-    vp += "File 1 must also contain the heading '## As-of (not acceptance)'. If it does not, goal_exists=false. ";
+    vp += "MUST open each path with read_file. ";
+    vp += "goal_exists=true only if you opened file 1, it is non-empty, it contains both goal witnesses as plain text, and it contains the heading '## As-of (not acceptance)'. ";
+    vp += "next_exists=true only if you opened file 2, it is non-empty, and it contains both next witnesses as plain text. ";
+    vp += "A pre-existing file that lacks either witness is exists=false. The slug alone is not enough. ";
+    vp += "Do not write. Do not create files. Fail closed: missing, empty, or a missing witness means exists=false. ";
+    vp += "Goal witness start:\n" + goal_head + "\n";
+    vp += "Goal witness end:\n" + goal_tail + "\n";
+    vp += "Next witness start:\n" + next_head + "\n";
+    vp += "Next witness end:\n" + next_tail + "\n";
     vp += "Hard forbid: .env, *.pem, *.key, tfvars, terraform.tfstate, auth.json, secrets/. ";
     vp += "Do not commit, push, or edit any file. ";
     vp += "Git root: " + git_root + "\n";
@@ -472,9 +493,10 @@ fn looks_dated_goal(rel) {
 
 fn shell_stop_block() {
     let s = "";
-    s += "If the shell tool is missing, denied, or errors, stop looking. ";
+    s += "If the shell tool is missing, denied, or errors, stop searching for a shell. ";
     s += "Do not search memory, tool schemas, hook notes, or another executor. ";
     s += "Do not call search_tool or use_tool to find a shell. ";
+    s += "read_file and directory listings remain allowed for the fallbacks this prompt already names. ";
     s
 }
 
@@ -488,6 +510,19 @@ fn self_check() {
     if looks_dated_goal("docs/goals/2026-10-05-reconcile-private-repo-scope.md") != true { return "dated path missed"; }
     if looks_dated_goal("docs/goals/reconcile-private-repo-scope.md") { return "dateless path looked dated"; }
     if looks_dated_goal("docs/goals/GOAL_NEXT.md") { return "goal next looked dated"; }
+    let short_w = body_witness_parts("alpha");
+    if map_str(short_w, "head") != "alpha" || map_str(short_w, "tail") != "alpha" { return "short witness"; }
+    let pad = "";
+    let i = 0;
+    while i < 160 {
+        pad += "x";
+        i += 1;
+    }
+    let long_w = body_witness_parts("HEADMARK" + pad + "TAILMARK");
+    if contains_str(map_str(long_w, "head"), "HEADMARK") != true { return "witness head"; }
+    if contains_str(map_str(long_w, "tail"), "TAILMARK") != true { return "witness tail"; }
+    if contains_str(map_str(long_w, "head"), "TAILMARK") { return "witness overlapped"; }
+    if map_str(body_witness_parts(""), "head") != "" { return "empty witness"; }
     ""
 }
 
@@ -1276,7 +1311,7 @@ if extra.len() > 0 {
 }
 
 if wrote == true {
-    let verified = verify_goal_files(git_root, goal_rel, next_rel, slug, "output:verify", verify_schema);
+    let verified = verify_goal_files(git_root, goal_rel, next_rel, goal_md, next_md, "output:verify", verify_schema);
     if verified != true || extra.len() > 0 {
         wrote = false;
         write_denied = true;
@@ -1295,7 +1330,7 @@ if wrote != true {
         msg += ", then resume this run.";
         log(msg);
         await_user("verification", msg);
-        let verified = verify_goal_files(git_root, goal_rel, next_rel, slug, "output:verify-after-pause", verify_schema);
+        let verified = verify_goal_files(git_root, goal_rel, next_rel, goal_md, next_md, "output:verify-after-pause", verify_schema);
         if verified == true { wrote = true; }
     }
 }
