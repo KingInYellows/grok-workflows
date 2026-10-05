@@ -993,7 +993,7 @@ for result in review_results {
         }
     }
 }
-if review_results.len() == 0 || review_failures == review_results.len() {
+if review_results.len() != review_jobs.len() || review_failures > 0 {
     notes.push(note_row("review", "Review did not return a result. Not submitted."));
     finish(notes);
 }
