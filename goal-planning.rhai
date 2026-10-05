@@ -1064,9 +1064,6 @@ if fin != () && fin.success == true && fin.output != () {
     if fin.output.refuse_reason != () {
         refuse_reason = short_reason(fin.output.refuse_reason);
     }
-    if non_empty(refuse_reason) {
-        log("Finalize refuse_reason=" + refuse_reason);
-    }
 } else if skip_output != true {
     log("Finalize unusable; scratch docs will be empty");
 }
@@ -1195,6 +1192,12 @@ if wrote != true {
     } else {
         log("Not writing docs/goals; slug is empty");
     }
+}
+
+if non_empty(slug) {
+    refuse_reason = "";
+} else if non_empty(refuse_reason) {
+    log("Finalize refuse_reason=" + refuse_reason);
 }
 
 let wrote_label = "false";
