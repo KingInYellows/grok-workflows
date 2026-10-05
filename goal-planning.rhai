@@ -250,36 +250,58 @@ fn index_of_from(hay, needle, start) {
     -1
 }
 
+fn fence_opens_with(s, open, close, marker) {
+    let i = open + 3;
+    while i < close {
+        let ch = s.sub_string(i, 1);
+        if ch != " " && ch != "\t" && ch != "\r" && ch != "\n" { break; }
+        i += 1;
+    }
+    if i + marker.len() > close { return false; }
+    s.sub_string(i, marker.len()) == marker
+}
+
+fn has_opening_fence(text, marker) {
+    if type_of(text) != "string" { return false; }
+    let fence = "```";
+    let search_from = 0;
+    let guard = 0;
+    while guard < 16 {
+        let open = index_of_from(text, fence, search_from);
+        if open < 0 { return false; }
+        let close = index_of_from(text, fence, open + fence.len());
+        if close < 0 { return false; }
+        if fence_opens_with(text, open, close, marker) { return true; }
+        search_from = close + fence.len();
+        guard += 1;
+    }
+    false
+}
+
 fn drop_fence_containing(text, marker) {
     if type_of(text) != "string" { return ""; }
     if contains_str(text, marker) != true { return text; }
     let s = text;
-    let guard = 0;
     let fence = "```";
-    while contains_str(s, marker) && guard < 4 {
-        let at = index_of_from(s, marker, 0);
-        if at < 0 { return s; }
-        let open = -1;
-        let j = at;
-        while j >= 0 {
-            if j + fence.len() <= s.len() && s.sub_string(j, fence.len()) == fence {
-                open = j;
-                break;
-            }
-            j -= 1;
-        }
+    let guard = 0;
+    let search_from = 0;
+    while guard < 8 {
+        let open = index_of_from(s, fence, search_from);
         if open < 0 { return s; }
         let close = index_of_from(s, fence, open + fence.len());
         if close < 0 { return s; }
-        let end = close + fence.len();
-        if end < s.len() && s.sub_string(end, 1) == "\n" { end += 1; }
-        let left = "";
-        if open > 0 { left = s.sub_string(0, open); }
-        let right = "";
-        if end < s.len() { right = s.sub_string(end, s.len() - end); }
-        let next = left + right;
-        if next == s { return s; }
-        s = next;
+        if fence_opens_with(s, open, close, marker) {
+            let end = close + fence.len();
+            if end < s.len() && s.sub_string(end, 1) == "\n" { end += 1; }
+            let left = "";
+            if open > 0 { left = s.sub_string(0, open); }
+            let right = "";
+            if end < s.len() { right = s.sub_string(end, s.len() - end); }
+            s = left + right;
+            search_from = open;
+        } else {
+            search_from = close + fence.len();
+        }
         guard += 1;
     }
     s
@@ -340,10 +362,10 @@ fn done_when_block() {
     s += "If the package has .venv/bin, the command sets PATH=\".venv/bin:$PATH\" and uses that interpreter. Bare python is not assumed to be on PATH. ";
     s += "Name the product command once. A second copy of that command is not a second proof. ";
     s += "A rehearsal of the product command before the commit is not the acceptance log. ";
-    s += "Commit locally, then run one acceptance brace group. The form A && B > log captures only B. Use a brace group whose first command prints HEAD and the output of git rev-parse HEAD, then the product command once, then the full suite when the commit changes product code. ";
-    s += "The acceptance log's first line must equal git rev-parse HEAD after that commit, and the group must exit 0, before the acceptance box is checked. ";
+    s += "Commit locally, then run one acceptance brace group in a clean checkout of that commit. Chain the commands with && so a failed product command fails the group. The form A && B > log captures only B, so the HEAD line, the product command, and the suite must all be inside the group. The group's first line is exactly HEAD, one space, and the full git rev-parse HEAD. Then the product command once. Then the full suite when the commit changes product code. ";
+    s += "The acceptance log's first line must be exactly HEAD, one space, and that full SHA, and the group must exit 0, before the acceptance box is checked. ";
     s += "Run the full default suite once, inside that post-commit group, when the commit changes product code. ";
-    s += "If HEAD moves again, rerun only the narrow gates. Do not rebuild an image whose Dockerfile and source are unchanged in the commit. Record the docker image inspect ID instead. ";
+    s += "If a later commit changes product code, run a new post-commit acceptance group for that HEAD, including the full suite. Rerun only the narrow gates when the later commit does not change product code. Do not rebuild an image whose Dockerfile and source are unchanged in the commit. Record the docker image inspect ID instead. ";
     s += "If the repo has a test that forbids one package importing another, and in-scope files cross that boundary, name that test and run it before the full suite. ";
     s += "The quote is the recipe or the exact command line. A target: ## comment is not a quote. ";
     s
@@ -580,6 +602,17 @@ fn self_check() {
     if contains_str(stripped, "Companion: goal-execute") != true { return "companion dropped"; }
     if starts_with(stripped, "keep") != true { return "prefix dropped"; }
     if drop_fence_containing("plain", "/create-workflow") != "plain" { return "plain mutated"; }
+    let goal_fence = "keep\n```\n/goal\nDo not include a /create-workflow fence.\n```\nCompanion: goal-execute\n";
+    if drop_fence_containing(goal_fence, "/create-workflow") != goal_fence { return "goal fence mutated"; }
+    let between = "```\nas-of\n```\nmentions /create-workflow\n```\nnext body\n```\n";
+    if drop_fence_containing(between, "/create-workflow") != between { return "between fences mutated"; }
+    let leading = "```\n/create-workflow name\n```\nkeep\n```\nas-of\n```\n";
+    let stripped_lead = drop_fence_containing(leading, "/create-workflow");
+    if contains_str(stripped_lead, "/create-workflow") { return "leading fence kept"; }
+    if contains_str(stripped_lead, "as-of") != true { return "as-of dropped"; }
+    if has_opening_fence(goal_fence, "/create-workflow") { return "goal mention looked fenced"; }
+    if has_opening_fence(leading, "/create-workflow") != true { return "leading fence missed"; }
+    if has_opening_fence(stripped_lead, "/create-workflow") { return "stripped fence remained"; }
     ""
 }
 
@@ -1198,9 +1231,9 @@ fin_prompt += "If terminal_notes contain no-submit and do not contain local-comm
 fin_prompt += "Do not write 'do not gt submit' in the summary lines, Outcome, Invariant, In scope, Out of scope, Done when, or the companion block. ";
 fin_prompt += "Planner hard forbids (no commit/push during THIS workflow) must NOT be copied into the /goal implement prompt. The /goal MAY edit and commit locally. It must say: do not /loop, do not gh merge, do not expand scope. ";
 fin_prompt += "If the change pins, launches, or speaks a protocol to another program, or callee_notes name required write arguments, goal_md must include a Callee contract section. Copy deadlines, env vars, argv flags, and required write arguments from callee_notes. If a note is UNKNOWN, write UNKNOWN and name the file the implementer must open. A fast fake success does not prove a deadline, a child env, or a dropped keyword argument. Omit Callee contract only when no note names a callee or a required write argument. ";
-fin_prompt += "goal_md sections, in order: Title; '## As-of (not acceptance)' with root, branch, HEAD, and dirty yes/no inside a fence; Why this goal now (3-6 lines plus evidence paths); '## Invariant' (one sentence, the production row or behavior, including required write arguments when the goal is one shared record); In scope; Out of scope; Callee contract when required; Done when (one product command in the changing package, good output, scope-fence command, venv PATH, rehearsal before commit is not acceptance, one post-commit brace group whose first line is HEAD plus git rev-parse HEAD, full suite once inside that group when product code changed, no second image rebuild when the Dockerfile and source are unchanged); '## Terminal'; Rollback; Budget hint; Rejected alternatives (exactly 2). ";
+fin_prompt += "goal_md sections, in order: Title; '## As-of (not acceptance)' with root, branch, HEAD, and dirty yes/no inside a fence; Why this goal now (3-6 lines plus evidence paths); '## Invariant' (one sentence, the production row or behavior, including required write arguments when the goal is one shared record); In scope; Out of scope; Callee contract when required; Done when (one product command in the changing package, good output, scope-fence command, venv PATH, rehearsal before commit is not acceptance, one post-commit brace group in a clean checkout of that commit whose commands are chained with && and whose first line is exactly HEAD, one space, and the full git rev-parse HEAD, full suite once inside that group when product code changed, a new full group when a later commit changes product code, no second image rebuild when the Dockerfile and source are unchanged); '## Terminal'; Rollback; Budget hint; Rejected alternatives (exactly 2). ";
 fin_prompt += "The as-of fence is not acceptance. Later steps must not treat that branch or HEAD as the current tree. ";
-fin_prompt += "Budget hint: /goal-execute implements and runs the acceptance gate after the local commit. It does not remap the pre-change call sites as the current tree. A finding counts only when the quoted line is still in HEAD. Progress boxes may be checked when that step's artifact exists. The acceptance box is [x] only when the post-commit gate log's first line equals git rev-parse HEAD and the group exited 0. After compaction, the next step is the first unchecked box, or a narrow re-run when HEAD moved again. Do not rebuild an image whose Dockerfile and source are unchanged. Record the docker image inspect ID. ";
+fin_prompt += "Budget hint: /goal-execute implements and runs the acceptance gate after the local commit. It does not remap the pre-change call sites as the current tree. A finding counts only when the quoted line is still in HEAD. Progress boxes may be checked when that step's artifact exists. The acceptance box is [x] only when the post-commit gate log's first line is exactly HEAD, one space, and the full git rev-parse HEAD from after that commit, and the group exited 0. After compaction, the next step is the first unchecked box. If HEAD moved again because product code changed, run a new post-commit acceptance group including the full suite. A narrow re-run is only for a later commit that does not change product code. Do not rebuild an image whose Dockerfile and source are unchanged. Record the docker image inspect ID. ";
 fin_prompt += "next_md: exactly 8 summary lines that do not treat the as-of branch as the spec; one fenced block that starts with /goal and includes the invariant, the single product done-when command, the post-commit acceptance rule, the callee-contract constants or UNKNOWN, the one Terminal line, out-of-scope, the HEAD-quote rule, the acceptance-box rule, the suite-once rule, and 'do not /loop, do not gh merge, do not expand scope'. Do not include a /create-workflow fence or a per-slug companion script. End with the line 'Companion: goal-execute'. The companion verifies HEAD and discards a finding whose quote is absent from HEAD. It does not map the pre-change tree as current. When a callee or required write arguments exist, it opens that source before implement. ";
 fin_prompt += "companion_name must be goal-execute. ";
 fin_prompt += "/goal fenced block max " + MAX_GOAL_WORDS.to_string() + " words. Keep it short. When a callee exists, keep the quoted constants inside that cap and cut narrative first. ";
@@ -1302,8 +1335,11 @@ if non_empty(slug) != true {
         log("Dropped /create-workflow fence from goal_md");
         goal_md = stripped_goal;
     }
-    if contains_str(next_md, "/create-workflow") || contains_str(goal_md, "/create-workflow") {
-        log("Finalize body still names /create-workflow outside a fence; output must drop it");
+    if has_opening_fence(next_md, "/create-workflow") || has_opening_fence(goal_md, "/create-workflow") {
+        log("Finalize body still has a /create-workflow fence; not writing goals");
+        goal_md = "";
+        next_md = "";
+        skip_output = true;
     }
     if as_of == "" && looks_dated_goal(goal_rel) {
         log("Finalize invented a date while as_of is empty; using dateless path");
@@ -1347,7 +1383,7 @@ out_prompt += "Git root: " + git_root + "\n";
 out_prompt += "File 1 relative path: " + goal_rel + "\n";
 out_prompt += "File 2 relative path: " + next_rel + "\n";
 out_prompt += "Write the goal_md body to file 1 and next_md body to file 2. Do not wrap in extra commentary. ";
-out_prompt += "If either body contains a /create-workflow fence or a per-slug companion script, delete that fence before writing. The companion line is exactly: Companion: goal-execute. ";
+out_prompt += "If either body contains a fence whose first non-empty line is /create-workflow, delete that fence before writing. Do not delete a /goal fence that only mentions that name. The companion line is exactly: Companion: goal-execute. ";
 out_prompt += "If a path is outside docs/goals/, refuse that write. ";
 out_prompt += "Bodies JSON:\n" + json_encode(#{ goal_md: goal_md, next_md: next_md, companion: companion }) + "\n";
 out_prompt += "Return wrote_goal, wrote_next, goal_path, next_path, extra_writes (must be empty).";
