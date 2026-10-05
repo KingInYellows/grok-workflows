@@ -1,0 +1,14 @@
+goal-planning.rhai
+  h_6000354274ce50 313-314,317-321,413-493,517,628-633,649-651,795,808,913,969,979-980,1090,1115-1121,1211-1217,1246,1282,1301
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "66dc4ddb594eaa48e39b0f8ab43e05211bf5131c",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
