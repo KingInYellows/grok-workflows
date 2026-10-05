@@ -238,6 +238,57 @@ fn open_status(status) {
     false
 }
 
+fn ident_number(id) {
+    let s = trimmed(id);
+    let i = s.len();
+    let digits = "";
+    while i > 0 {
+        let ch = s.sub_string(i - 1, 1);
+        if ch >= "0" && ch <= "9" {
+            digits = ch + digits;
+            i = i - 1;
+        } else {
+            break;
+        }
+    }
+    if digits == "" { return -1; }
+    let n = -1;
+    try {
+        n = parse_int(digits);
+    } catch (err) {
+        n = -1;
+    }
+    n
+}
+
+fn ident_prefix(id) {
+    let s = trimmed(id);
+    let i = s.len();
+    while i > 0 {
+        let ch = s.sub_string(i - 1, 1);
+        if ch >= "0" && ch <= "9" {
+            i = i - 1;
+        } else {
+            break;
+        }
+    }
+    if i <= 0 { return ""; }
+    s.sub_string(0, i)
+}
+
+fn ident_before(a, b) {
+    let left_id = trimmed(a);
+    let right_id = trimmed(b);
+    let left_prefix = ident_prefix(left_id);
+    let right_prefix = ident_prefix(right_id);
+    let left_num = ident_number(left_id);
+    let right_num = ident_number(right_id);
+    if left_prefix == right_prefix && left_num >= 0 && right_num >= 0 && left_num != right_num {
+        return left_num < right_num;
+    }
+    left_id < right_id
+}
+
 fn better_issue(a, b) {
     let sa = status_rank(map_str(a, "status_type"));
     let sb = status_rank(map_str(b, "status_type"));
@@ -247,7 +298,7 @@ fn better_issue(a, b) {
     let pb = priority_rank(map_int(b, "priority"));
     if pa < pb { return true; }
     if pa > pb { return false; }
-    map_str(a, "identifier") < map_str(b, "identifier")
+    ident_before(map_str(a, "identifier"), map_str(b, "identifier"))
 }
 
 fn better_priority(a, b) {
@@ -255,7 +306,7 @@ fn better_priority(a, b) {
     let pb = priority_rank(map_int(b, "priority"));
     if pa < pb { return true; }
     if pa > pb { return false; }
-    map_str(a, "identifier") < map_str(b, "identifier")
+    ident_before(map_str(a, "identifier"), map_str(b, "identifier"))
 }
 
 fn sort_with(items, by_priority) {
@@ -296,7 +347,7 @@ fn better_action(a, b) {
     let rb = action_rank(map_str(b, "kind"));
     if ra < rb { return true; }
     if ra > rb { return false; }
-    map_str(a, "identifier") < map_str(b, "identifier")
+    ident_before(map_str(a, "identifier"), map_str(b, "identifier"))
 }
 
 fn sort_actions(items) {
@@ -710,10 +761,12 @@ fn make_action(issue, kind, state_name, state_type, label, evidence, detail) {
 }
 
 fn make_finding(issue, kind, detail) {
+    let text = clip(detail, 200);
     #{
         identifier: map_str(issue, "identifier"),
         kind: kind,
-        detail: clip(detail, 200),
+        detail: text,
+        evidence: text,
         status: "report_only",
     }
 }
@@ -740,7 +793,12 @@ fn census(issues, cycle_id, cycle_ok, states, max_shipped, max_unlabeled) {
                 actions.push(make_action(issue, "cycle_unstarted", map_str(dest, "name"), "unstarted", "", "", map_str(dest, "name")));
             }
         } else if inside && (status == "completed" || status == "canceled") {
-            actions.push(make_action(issue, "clear_cycle", "", "", "", "", "remove from cycle"));
+            let evidence = map_str(issue, "state_name");
+            evidence += " ";
+            evidence += status;
+            evidence += " still on cycle ";
+            evidence += map_str(issue, "cycle_id");
+            actions.push(make_action(issue, "clear_cycle", "", "", "", evidence, "remove from cycle"));
         }
         let priority = map_int(issue, "priority");
         if priority == 0 && open_status(status) {
@@ -836,6 +894,20 @@ fn shipped_rows(out) {
             rows.push(#{
                 identifier: map_str(item, "identifier"),
                 evidence: map_str(item, "evidence"),
+            });
+        }
+    }
+    rows
+}
+
+fn left_open_rows(out) {
+    let rows = [];
+    if out == () || is_canned(out) { return rows; }
+    for item in as_array(map_get(out, "proposals")) {
+        if type_of(item) == "map" && map_str(item, "identifier") != "" && !map_bool(item, "shipped", false) {
+            rows.push(#{
+                identifier: map_str(item, "identifier"),
+                detail: "shipped false",
             });
         }
     }
@@ -1034,14 +1106,40 @@ fn self_check() {
     if triage_in == () || map_str(triage_in, "state_type") != "unstarted" { return "triage in"; }
     let cycle_backlog = first_action(checked.actions, "B-IN");
     if cycle_backlog == () || map_str(cycle_backlog, "kind") != "cycle_unstarted" { return "cycle backlog"; }
-    if map_str(first_action(checked.actions, "DONE"), "kind") != "clear_cycle" { return "clear completed"; }
+    let done_row = first_action(checked.actions, "DONE");
+    if map_str(done_row, "kind") != "clear_cycle" { return "clear completed"; }
+    if !map_str(done_row, "evidence").contains("completed") { return "clear evidence status"; }
+    if !map_str(done_row, "evidence").contains("c1") { return "clear evidence cycle"; }
     if map_str(first_action(checked.actions, "CAN"), "kind") != "clear_cycle" { return "clear canceled"; }
+    let done_zero = census([sample_issue("ZED", "completed", 0, "c1", [], [], false)], "c1", true, states, 15, 20);
+    if finding_has(done_zero.findings, "ZED", "priority_missing") { return "done priority"; }
+    let ranked = sort_actions([
+        #{ identifier: "NSWCH-19", kind: "clear_cycle" },
+        #{ identifier: "NSWCH-6", kind: "clear_cycle" },
+        #{ identifier: "NSWCH-29", kind: "clear_cycle" },
+    ]);
+    if map_str(ranked[0], "identifier") != "NSWCH-6" { return "ident order"; }
+    if map_str(ranked[1], "identifier") != "NSWCH-19" { return "ident order mid"; }
+    if map_str(ranked[2], "identifier") != "NSWCH-29" { return "ident order tail"; }
     if actions_for(checked.actions, "PRI0").len() != 0 { return "priority action"; }
     if !finding_has(checked.findings, "PRI0", "priority_missing") { return "priority finding"; }
     if !finding_has(checked.findings, "OUT", "started_outside_cycle") { return "outside cycle"; }
     if !finding_has(checked.findings, "OUT", "empty_description") { return "empty description"; }
     if !finding_has(checked.findings, "OUT", "broken_blocker") { return "broken blocker"; }
     if !finding_has(checked.findings, "HELD", "blocker_done") { return "done blocker"; }
+    let held_ev = "";
+    for item in checked.findings {
+        if map_str(item, "identifier") == "HELD" && map_str(item, "kind") == "blocker_done" {
+            held_ev = map_str(item, "evidence");
+        }
+    }
+    if held_ev == "" { return "blocker evidence"; }
+    let left = left_open_rows(#{ proposals: [
+        #{ identifier: "NSWCH-10", shipped: false, evidence: "" },
+        #{ identifier: "NSWCH-11", shipped: true, evidence: "abc" },
+    ] });
+    if left.len() != 1 { return "left open count"; }
+    if map_str(left[0], "identifier") != "NSWCH-10" { return "left open id"; }
     if finding_has(checked.findings, "HELD", "broken_blocker") { return "done blocker broken"; }
     let shards = shard_ids([
         sample_issue("A", "backlog", 2, "", [], [], false),
@@ -1126,6 +1224,8 @@ fn self_check() {
         #{ identifier: "MED-3", kind: "blocker_done", status: "report_only", detail: "MED-9", evidence: "" },
         #{ identifier: "MED-4", kind: "priority_missing", status: "report_only", detail: "priority is 0", evidence: "" },
         #{ identifier: "MED-5", kind: "priority_missing", status: "report_only", detail: "priority is 0", evidence: "" },
+    ], [
+        #{ identifier: "NSWCH-10", detail: "shipped false" },
     ]);
     let done_at = grouped.index_of("## Done proposals");
     let act_at = grouped.index_of("## Actions");
@@ -1133,6 +1233,7 @@ fn self_check() {
     if done_at == () || act_at == () || pri_at == () { return "report sections"; }
     if done_at > act_at || act_at > pri_at { return "report order"; }
     if grouped.contains("### MED-4") { return "priority heading"; }
+    if !grouped.contains("NSWCH-10") { return "left open report"; }
     if !list_prompt("team", "medianest", 2, "", 150).contains("Do not call get_issue") { return "list get"; }
     if !list_prompt("team", "medianest", 2, "", 150).contains("priority 2") { return "list priority"; }
     if !list_prompt("team", "medianest", 2, "", 150).contains("Do not page completed, canceled, or duplicate") { return "list closed"; }
@@ -1463,7 +1564,24 @@ fn priority_section(rows) {
     s
 }
 
-fn report_md(header, notes, actions, findings) {
+fn left_open_section(rows) {
+    let s = "\n## Left open\n";
+    if rows.len() == 0 {
+        s += "\nNone.\n";
+        return s;
+    }
+    s += "\nThe shipped judge saw these open issues and did not propose Done.\n";
+    for row in rows {
+        s += "\n- ";
+        s += map_str(row, "identifier");
+        s += ": ";
+        s += map_str(row, "detail");
+    }
+    s += "\n";
+    s
+}
+
+fn report_md(header, notes, actions, findings, left_open) {
     let act = split_actions(actions);
     let found = split_findings(findings);
     let md = header;
@@ -1472,6 +1590,7 @@ fn report_md(header, notes, actions, findings) {
     md += section_rows("Actions", act.rest);
     md += section_rows("Findings", found.rest);
     md += priority_section(found.priority);
+    md += left_open_section(left_open);
     md
 }
 
@@ -1998,6 +2117,7 @@ if judge_jobs.len() > 0 { judged = parallel(judge_jobs); }
 let label_out = ();
 if want_label { label_out = slot_map(judged, ship_n); }
 let ship_proposals = [];
+let left_open = [];
 let ship_failed = 0;
 let ship_at = 0;
 while ship_at < ship_n {
@@ -2006,6 +2126,7 @@ while ship_at < ship_n {
         ship_failed += 1;
     } else {
         for ship_row in shipped_rows(ship_map) { ship_proposals.push(ship_row); }
+        for open_row in left_open_rows(ship_map) { left_open.push(open_row); }
     }
     ship_at += 1;
 }
@@ -2092,7 +2213,7 @@ for row in selected.overflow { log("cap dropped " + map_str(row, "identifier") +
 let header = header_for(apply, confirm_done, team_label, cycle_label, behind);
 if !apply || proposed_count(actions) == 0 {
     phase("Report");
-    finish(report_md(header, notes, concat_rows(actions, done_pack.held), findings), concat_rows(actions, done_pack.held));
+    finish(report_md(header, notes, concat_rows(actions, done_pack.held), findings, left_open), concat_rows(actions, done_pack.held));
 }
 
 phase("Gate");
@@ -2133,4 +2254,4 @@ while apply_i < apply_n {
 }
 
 phase("Report");
-finish(report_md(header, notes, concat_rows(actions, done_pack.held), findings), concat_rows(actions, done_pack.held));
+finish(report_md(header, notes, concat_rows(actions, done_pack.held), findings, left_open), concat_rows(actions, done_pack.held));
