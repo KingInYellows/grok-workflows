@@ -1,0 +1,22 @@
+README.md
+  h_6000354274ce50 53
+goal-planning.rhai
+  h_6000354274ce50 510-511
+linear-cycle-deliver.rhai
+  h_6000354274ce50 808
+linear-organize.rhai
+  h_6000354274ce50 1184-1186
+workspace-map.rhai
+  h_6000354274ce50 345
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2bb97bb2feed361114f6d2ff6721c12c501ea547",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
