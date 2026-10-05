@@ -1091,6 +1091,8 @@ fn self_check() {
     if !inventory_prompt("", "", 150, 200).contains("search_tool") { return "search prompt"; }
     if !inventory_prompt("", "", 150, 200).contains("Do not call get_issue") { return "index get"; }
     if !inventory_prompt("", "", 150, 200).contains("labels_truncated") { return "label cap prompt"; }
+    if !inventory_prompt("", "", 150, 200).contains("list_issue_labels") { return "label tool"; }
+    if !inventory_prompt("", "", 150, 200).contains("cursor") { return "label cursor"; }
     if !detail_prompt("[]").contains("need_description") { return "detail prompt"; }
     if !ship_skeptic_prompt("main", "{}").contains("todos/debt") { return "skeptic debt"; }
     if !ship_skeptic_prompt("main", "{}").contains("Do not read CI") { return "skeptic ci"; }
@@ -1196,9 +1198,11 @@ fn inventory_prompt(team_override, only_issue, max_issues, max_labels) {
     p += "2. The team override is in the packet. When it is non-empty, match that string. Otherwise match repo_name, case-insensitive, against the Linear team name or team key. Call search_tool, then the list-teams tool. Set team_match_count to the exact match count. When it is not 1, set ok false and return. Do not pick a fuzzy match.\n";
     p += "3. Run gt trunk --no-interactive and put that branch name in trunk. Run git fetch origin TRUNK, then git rev-list --count HEAD..origin/TRUNK. Put that integer in head_behind. Zero means HEAD already contains origin/TRUNK. When the fetch or the rev-list fails, set head_behind to -1 and name the command in error.\n";
     p += "4. Read the team workflow states. For each state return name, type, and id. type is the Linear statusType: backlog, unstarted, started, triage, completed, or canceled.\n";
-    p += "5. Read the team's existing labels. Return every name and id, at most ";
+    p += "5. Read the team's existing labels with list_issue_labels. Call search_tool, then that tool for the matched team. Pass limit ";
     p += max_labels.to_string();
-    p += ". Create none. When the team has more labels than that cap, keep the first ";
+    p += ". The tool defaults to 50 when limit is omitted, and its maximum is 250, so when the cap is above 250 pass limit 250 and follow the cursor. Do not omit limit. When the response includes a next-page cursor and the collected count is still below the cap, call list_issue_labels again with that cursor and the same team and limit. Stop when the cursor is absent or the collected count reaches ";
+    p += max_labels.to_string();
+    p += ". Return every collected name and id. Create none. When a cursor remains after the cap, keep the first ";
     p += max_labels.to_string();
     p += ", set error to labels_truncated, and still set ok true. Return the schema object. Do not write the catalog in prose.\n";
     p += "6. Read the current cycle. When one exists, set cycle_ok true and cycle_id to its id. When it does not, set cycle_ok false and cycle_id to an empty string. Still return ok true.\n";
