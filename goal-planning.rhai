@@ -986,6 +986,7 @@ pack = json_encode(#{
 phase("Finalize");
 let goal_md = "";
 let next_md = "";
+let refuse_reason = "";
 let fin_prompt = "";
 fin_prompt += "You are a cold subagent. Write the two markdown documents from the structured pick. Do not implement. ";
 fin_prompt += forbid_block();
@@ -1060,8 +1061,11 @@ if fin != () && fin.success == true && fin.output != () {
         skip_output = true;
         log("Finalize returned an empty slug; not writing goals");
     }
-    if fin.output.refuse_reason != () && non_empty(fin.output.refuse_reason) {
-        log("Finalize refuse_reason=" + short_reason(fin.output.refuse_reason));
+    if fin.output.refuse_reason != () {
+        refuse_reason = short_reason(fin.output.refuse_reason);
+    }
+    if non_empty(refuse_reason) {
+        log("Finalize refuse_reason=" + refuse_reason);
     }
 } else if skip_output != true {
     log("Finalize unusable; scratch docs will be empty");
@@ -1186,14 +1190,19 @@ if wrote != true {
     }
 }
 } else {
-    log("Not writing docs/goals after rejected slug=" + rejected_slug);
+    if rejected_slug != "" {
+        log("Not writing docs/goals after rejected slug=" + rejected_slug);
+    } else {
+        log("Not writing docs/goals; slug is empty");
+    }
 }
 
 let wrote_label = "false";
 if wrote == true { wrote_label = "true"; }
 let summary = "";
 if non_empty(slug) != true {
-    summary = "No goal written horizon=" + horizon_value + " wrote=false";
+    summary = "No goal written horizon=" + horizon_value + " wrote=" + wrote_label;
+    if non_empty(refuse_reason) { summary += " refuse=" + refuse_reason; }
 } else {
     summary = "Planned slug=" + slug + " horizon=" + horizon_value + " wrote=" + wrote_label;
 }
@@ -1204,6 +1213,7 @@ complete(#{
     summary: summary,
     slug: slug,
     companion: companion,
+    refuse_reason: refuse_reason,
     horizon: horizon_value,
     git_root: git_root,
     branch: branch,
