@@ -22,7 +22,7 @@ Grok loads user-level workflows from real files in `~/.grok/workflows/` (not a s
 | `/implement-approved-plan` | Implement an approved plan in an isolated worktree, run tests after, and stop without applying if tests fail |
 | `/implement-from-plan` | Read source files, write a step-by-step process file, implement from it, then test and fix |
 | `/linear-cycle-deliver` | Plan and, when apply is true, TDD-implement the current Linear cycle as Graphite PRs |
-| `/linear-organize` | Report Linear triage, cycle, label, priority, and shipped-but-open issues |
+| `/linear-organize` | Health pass for the current git checkout. The Linear team matches the origin repository name, or `args.team` |
 | `/multi-track-ship` | Multi-track ship: read a multi-area plan and implement tracks in parallel |
 | `/preflight` | Universal pre-commit/pre-PR gate: map the change set, multi-dimension review |
 | `/preflight-gate` | Read-only pre-commit gate: review the diff, audit tests from `AGENTS.md`, scan for secrets, then SHIP or BLOCK |

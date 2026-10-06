@@ -1,7 +1,7 @@
 let meta = #{
     name: "linear-organize",
     description: "Report Linear triage, cycle, label, priority, and shipped-but-open issues, and write only the allowlisted fixes after a gate",
-    when_to_use: "Health pass for the Linear team matching the origin repo name. Read-only unless args.apply is true. Completed-state writes also need args.confirm_done. Never cancels. /linear-organize or /workflow linear-organize.",
+    when_to_use: "Health pass for whichever git checkout you are in. The Linear team is the origin repository name, or args.team. Uses that remote's default branch and does not require Graphite. Read-only unless args.apply is true. Completed-state writes also need args.confirm_done. Never cancels. /linear-organize or /workflow linear-organize.",
     phases: [
         #{ title: "Inventory", detail: "setup, open lists, cycle-closed list, targeted detail" },
         #{ title: "Census", detail: "script rules, then parallel shipped and label judges" },
@@ -203,11 +203,31 @@ fn take_rest(items, n) {
     rest
 }
 
+fn starts_with(text, prefix) {
+    let n = text.len();
+    let m = prefix.len();
+    if m == 0 || n < m { return false; }
+    text.sub_string(0, m) == prefix
+}
+
+fn trunk_name(raw) {
+    let n = trimmed(raw);
+    if starts_with(n, "refs/heads/") {
+        n = n.sub_string(11, n.len() - 11);
+    }
+    if starts_with(n, "origin/") {
+        n = n.sub_string(7, n.len() - 7);
+    }
+    n
+}
+
 fn safe_branch(name) {
     let n = trimmed(name);
     if n == "" || n.len() > 80 { return false; }
     if n.contains(" ") || n.contains("..") || n.contains("~") { return false; }
-    if n.contains("/") || n.contains("\\") || n.contains(":") { return false; }
+    if n.contains("\\") || n.contains(":") { return false; }
+    if n.contains("//") { return false; }
+    if n.sub_string(0, 1) == "/" || n.sub_string(n.len() - 1, 1) == "/" { return false; }
     if n.contains(";") || n.contains("|") || n.contains("&") { return false; }
     if n.contains("$") || n.contains("`") || n.contains("'") { return false; }
     if n.contains("\"") || n.contains("\n") { return false; }
@@ -720,8 +740,7 @@ fn states_of_type(states, kind) {
     matches
 }
 
-// Custom states can share a type and sort first. Gated is backlog on MSTUP and
-// was listed before Backlog, so the first match is not the default lane.
+// Custom states can share a type and sort first. The first match is not the default lane.
 fn state_by_type(states, kind) {
     let matches = states_of_type(states, kind);
     if matches.len() == 0 { return (); }
@@ -1293,7 +1312,22 @@ fn self_check() {
     if !label_grounded("Backend hosts the guest", "backend") { return "label start"; }
     if !label_grounded("runs on Backend", "backend") { return "label end"; }
     if label_grounded("the ci-watcher owns this", "ci") { return "label prefix"; }
+    if trunk_name("origin/main") != "main" { return "strip origin"; }
+    if trunk_name("refs/heads/develop") != "develop" { return "strip refs"; }
+    if trunk_name("origin/release/1.0") != "release/1.0" { return "strip nested"; }
+    if !safe_branch("release/1.0") { return "slash branch"; }
+    if !safe_branch(trunk_name("refs/heads/origin/release/1.0")) { return "safe nested"; }
+    if safe_branch("../main") { return "dotdot branch"; }
+    if safe_branch("/main") { return "leading slash"; }
+    if safe_branch("main/") { return "trailing slash"; }
+    if safe_branch("a//b") { return "double slash"; }
     if !inventory_prompt("", "", 150, 200).contains("head_behind") { return "behind prompt"; }
+    if !inventory_prompt("", "", 150, 200).contains("symbolic-ref") { return "origin head"; }
+    if inventory_prompt("", "", 150, 200).contains("gt trunk") { return "graphite trunk"; }
+    if !inventory_prompt("", "", 150, 200).contains("Do not run gt") { return "no gt"; }
+    if !shipped_prompt("release/1.0", "[]").contains("origin/release/1.0") { return "slash trunk prompt"; }
+    if !shipped_prompt("main", "[]").contains("--fixed-strings") { return "fixed grep"; }
+    if shipped_prompt("main", "[]").contains("Graphite") { return "graphite shipped"; }
     if !inventory_prompt("", "", 150, 200).contains("search_tool") { return "search prompt"; }
     if !inventory_prompt("", "", 150, 200).contains("Do not call get_issue") { return "index get"; }
     if !inventory_prompt("", "", 150, 200).contains("labels_truncated") { return "label cap prompt"; }
@@ -1401,12 +1435,12 @@ fn guardrails_text() {
 }
 
 fn inventory_prompt(team_override, only_issue, max_issues, max_labels) {
-    let p = "You collect one Linear team's open issues for a health pass. Do not edit anything. Do not call a save tool.\n";
+    let p = "You collect one Linear team's open issues for a health pass in the current git checkout. Do not edit anything. Do not call a save tool. This pass is not tied to one repository.\n";
     p += guardrails_text();
     p += "Steps:\n";
-    p += "1. Run git remote get-url origin. The repo name is the final slash-separated segment, with a trailing .git removed. Do not use the directory from git rev-parse --show-toplevel.\n";
-    p += "2. The team override is in the packet. When it is non-empty, match that string. Otherwise match repo_name, case-insensitive, against the Linear team name or team key. Call search_tool, then the list-teams tool. Set team_match_count to the exact match count. When it is not 1, set ok false and return. Do not pick a fuzzy match.\n";
-    p += "3. Run gt trunk --no-interactive and put that branch name in trunk. Run git fetch origin TRUNK, then git rev-list --count HEAD..origin/TRUNK. Put that integer in head_behind. Zero means HEAD already contains origin/TRUNK. When the fetch or the rev-list fails, set head_behind to -1 and name the command in error.\n";
+    p += "1. Run git remote get-url origin. The repo name is the final slash-separated segment, with a trailing .git removed. Do not use the directory from git rev-parse --show-toplevel. A worktree or another clone of the same origin is the same repository.\n";
+    p += "2. The team override is in the packet. When it is non-empty, match that string. Otherwise match repo_name, case-insensitive, against the Linear team name or team key. Call search_tool, then the list-teams tool. Set team_match_count to the exact match count. When it is not 1, set ok false and return. Do not pick a fuzzy match. Do not guess a team from the directory name, a parent workspace, or a previous run.\n";
+    p += "3. Do not run gt. Do not initialize Graphite. Do not change git config. Run git symbolic-ref --short refs/remotes/origin/HEAD and take the branch name after origin/ as trunk. When that ref is missing, use main if origin/main exists, otherwise master if origin/master exists. Put only the branch name in trunk, with no origin/ or refs/heads/ prefix. Run git fetch origin TRUNK, then git rev-list --count HEAD..origin/TRUNK. Put that integer in head_behind. Zero means HEAD already contains origin/TRUNK. When the remote, the symbolic-ref, the fetch, or the rev-list fails, set trunk to an empty string, set head_behind to -1, and name the command in error.\n";
     p += "4. Read the team workflow states. For each state return name, type, and id. type is the Linear statusType: backlog, unstarted, started, triage, completed, or canceled.\n";
     p += "5. Read the team's existing labels with list_issue_labels. Call search_tool, then that tool for the matched team. Pass limit ";
     p += max_labels.to_string();
@@ -1466,9 +1500,9 @@ fn shipped_prompt(trunk, packet_json) {
     p += guardrails_text();
     p += "Run git log origin/";
     p += trunk;
-    p += " --grep=IDENTIFIER for each issue. List every commit whose subject contains that identifier. Do not stop after the first. Read file contents with git show origin/";
+    p += " --fixed-strings --grep=IDENTIFIER for each issue. IDENTIFIER is that issue's identifier as a literal string. List every commit whose message contains that identifier. Do not stop after the first. Read file contents with git show origin/";
     p += trunk;
-    p += ":path. Do not read the working tree and do not read the local trunk branch. A stale checkout is not evidence. Graphite can close a pull request with merged false after the commit is on the remote trunk. That is not evidence the work is absent.\n";
+    p += ":path. Do not read the working tree and do not read the local trunk branch. A stale checkout is not evidence. A pull request can be closed without merged true after its commit is on the remote trunk, including after a squash or rebase. That is not evidence the work is absent. Do not run gt. Do not require a stack tool or a forge.\n";
     p += "The packet description is the acceptance criteria or the Remaining scope section when the issue has one. Set shipped true only when every listed commit together fully meets that text. A partial slice stays shipped false. A mention that appears only in docs, a changelog, or a todos/debt note is not remaining work. Production code, tests, schema, and migrations still count. When unsure, set shipped false. evidence lists each commit subject, and it is empty when shipped is false.\n";
     p += "Return one proposal per packet issue.\n";
     p += packet_line(packet_json);
@@ -1527,7 +1561,7 @@ fn apply_prompt(row, trunk) {
     p += "When clear_cycle needs a cycle field the save schema does not have, set applied false, skipped to schema_missing, and name the missing field in evidence. Do not guess a field.\n";
     p += "mark_done may add one comment that contains the words organization pass and the packet evidence. The trunk in the packet is ";
     p += trunk;
-    p += ". Other kinds add no comment. A completed state closes the mirrored GitHub issue.\n";
+    p += ". Other kinds add no comment. Do not close or edit a forge issue yourself. When Linear syncs the issue to GitHub, a completed state can close that mirror. When it does not, Done changes only the Linear state.\n";
     p += "After a write, re-read the issue. Set applied true only when the re-read shows the requested state type, a cleared cycle, or the added label. Put that re-read fact in evidence. Echo status_type, cycle_cleared, and label_added from the re-read.\n";
     p += packet_line(json_encode(#{
         identifier: map_str(row, "identifier"),
@@ -1592,7 +1626,7 @@ fn public_rows(rows) {
     out
 }
 
-fn header_for(apply, confirm_done, team, cycle, behind) {
+fn header_for(apply, confirm_done, team, cycle, behind, trunk) {
     let s = "# linear-organize\n\n";
     s += "- apply: ";
     if apply { s += "true\n"; } else { s += "false\n"; }
@@ -1602,9 +1636,11 @@ fn header_for(apply, confirm_done, team, cycle, behind) {
     s += team;
     s += "\n- cycle: ";
     s += cycle;
+    s += "\n- trunk: ";
+    s += trunk;
     s += "\n- head_behind: ";
     s += behind.to_string();
-    s += "\n- note: Done closes the mirrored GitHub issue.\n";
+    s += "\n- note: Done changes the Linear state. When GitHub sync is on, Done also closes the mirrored GitHub issue.\n";
     s
 }
 
@@ -1723,7 +1759,7 @@ fn finish(report, actions) {
 }
 
 fn gate_text(rows, held_count) {
-    let s = "Resume to apply these Linear changes. A completed state closes the mirrored GitHub issue.\n";
+    let s = "Resume to apply these Linear changes. Done changes the Linear state. When GitHub sync is on, Done also closes the mirrored GitHub issue.\n";
     for row in rows {
         if map_str(row, "status") == "proposed" {
             s += map_str(row, "identifier");
@@ -2011,9 +2047,11 @@ if !map_bool(inventory_out, "ok", false) {
 let team_label = team_override;
 if team_label == "" { team_label = map_str(inventory_out, "repo_name"); }
 if team_label == "" { team_label = "origin repo"; }
-let trunk = map_str(inventory_out, "trunk");
+let trunk = trunk_name(map_str(inventory_out, "trunk"));
 let behind = as_int(map_get(inventory_out, "head_behind"), -1, -1, 1000000);
 if !safe_branch(trunk) { behind = -1; }
+let trunk_label = trunk;
+if !safe_branch(trunk) { trunk_label = "unavailable"; }
 let cycle_id = map_str(inventory_out, "cycle_id");
 let cycle_ok = map_bool(inventory_out, "cycle_ok", false);
 if cycle_id == "" { cycle_ok = false; }
@@ -2337,7 +2375,7 @@ if overflow_n > 20 {
 }
 for row in selected.overflow { log("cap dropped " + map_str(row, "identifier") + " " + map_str(row, "kind")); }
 
-let header = header_for(apply, confirm_done, team_label, cycle_label, behind);
+let header = header_for(apply, confirm_done, team_label, cycle_label, behind, trunk_label);
 if !apply || proposed_count(actions) == 0 {
     phase("Report");
     finish(report_md(header, notes, concat_rows(actions, done_pack.held), findings, left_open), concat_rows(actions, done_pack.held));
