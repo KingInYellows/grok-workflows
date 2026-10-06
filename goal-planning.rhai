@@ -573,6 +573,97 @@ fn shell_stop_block() {
     s
 }
 
+fn trim_command_token(s) {
+    let t = trimmed(s);
+    let guard = 0;
+    while t.len() > 0 && guard < 8 {
+        let ch = t.sub_string(t.len() - 1, 1);
+        if ch == "." || ch == "," || ch == ";" || ch == ":" || ch == ")" || ch == "\"" || ch == "'" {
+            t = t.sub_string(0, t.len() - 1);
+            t = trimmed(t);
+        } else {
+            break;
+        }
+        guard += 1;
+    }
+    guard = 0;
+    while t.len() > 0 && guard < 8 {
+        let ch = t.sub_string(0, 1);
+        if ch == "(" || ch == "\"" || ch == "'" {
+            t = t.sub_string(1, t.len() - 1);
+            t = trimmed(t);
+        } else {
+            break;
+        }
+        guard += 1;
+    }
+    t
+}
+
+fn has_unknown_shell_word(text) {
+    if type_of(text) != "string" || text == "" { return false; }
+    let n = text.len();
+    let i = 0;
+    let word = "";
+    while i <= n {
+        let at_end = i == n;
+        let ch = "";
+        if at_end != true { ch = text.sub_string(i, 1); }
+        let break_word = at_end;
+        if ch == " " || ch == "\t" || ch == "&" || ch == "|" || ch == ";" { break_word = true; }
+        if break_word == true {
+            if trim_command_token(word) == "UNKNOWN" { return true; }
+            word = "";
+        } else {
+            word += ch;
+        }
+        if at_end { break; }
+        i += 1;
+    }
+    false
+}
+
+fn line_is_unknown_command(line) {
+    let t = trimmed(line);
+    if t == "UNKNOWN" { return true; }
+    let prefix = "Product command:";
+    if starts_with(t, prefix) {
+        let rest = trim_command_token(t.sub_string(prefix.len(), t.len() - prefix.len()));
+        if rest == "UNKNOWN" { return true; }
+    }
+    let looks = false;
+    if starts_with(t, "PATH=") { looks = true; }
+    if contains_str(t, "&&") || contains_str(t, "||") { looks = true; }
+    if looks == true && has_unknown_shell_word(t) { return true; }
+    false
+}
+
+fn publishes_unknown_command(body) {
+    if type_of(body) != "string" || body == "" { return false; }
+    let start = 0;
+    let i = 0;
+    let n = body.len();
+    while i <= n {
+        let at_end = i == n;
+        let is_break = at_end;
+        if at_end != true {
+            if body.sub_string(i, 1) == "\n" { is_break = true; }
+        }
+        if is_break == true {
+            let line = "";
+            if i > start { line = body.sub_string(start, i - start); }
+            if line.len() > 0 && line.sub_string(line.len() - 1, 1) == "\r" {
+                line = line.sub_string(0, line.len() - 1);
+            }
+            if line_is_unknown_command(line) { return true; }
+            start = i + 1;
+        }
+        if at_end { break; }
+        i += 1;
+    }
+    false
+}
+
 fn self_check() {
     let usage = "Usage: scripts/verify.sh [--component COMPONENT] [--base-ref SHA] [--history-base SHA --history-head SHA]";
     if quote_names_command("scripts/verify.sh --component python", usage) { return "usage quote accepted"; }
@@ -613,6 +704,15 @@ fn self_check() {
     if has_opening_fence(goal_fence, "/create-workflow") { return "goal mention looked fenced"; }
     if has_opening_fence(leading, "/create-workflow") != true { return "leading fence missed"; }
     if has_opening_fence(stripped_lead, "/create-workflow") { return "stripped fence remained"; }
+    if publishes_unknown_command("Product command: pytest\n") { return "real command looked unknown"; }
+    if publishes_unknown_command("The note is UNKNOWN plus the file.\n") { return "sentence looked unknown"; }
+    if publishes_unknown_command("keep\nUNKNOWN\n") != true { return "bare UNKNOWN missed"; }
+    if publishes_unknown_command("  Product command: UNKNOWN\n") != true { return "product line missed"; }
+    if publishes_unknown_command("{\n  echo \"HEAD\" &&\n  UNKNOWN\n}\n") != true { return "acceptance UNKNOWN missed"; }
+    if publishes_unknown_command("echo \"HEAD\" && UNKNOWN\n") != true { return "same-line UNKNOWN missed"; }
+    if publishes_unknown_command("UNKNOWN && pytest\n") != true { return "leading UNKNOWN missed"; }
+    if publishes_unknown_command("PATH=\".venv/bin:$PATH\" UNKNOWN\n") != true { return "prefixed UNKNOWN missed"; }
+    if publishes_unknown_command("Product command: UNKNOWN.\n") != true { return "punctuated product line missed"; }
     ""
 }
 
@@ -1157,7 +1257,7 @@ if ares.len() > 1 && usable_verdict(ares[1]) {
             if cited == "" || cited == "UNKNOWN" { unknown_runner = true; }
         }
         if unknown_runner == true {
-            log("Proof slot real=false on UNKNOWN runner; keeping slug=" + slug + " so finalize can cite the root-doc runner");
+            log("Proof slot real=false on UNKNOWN runner; keeping slug=" + slug + " so finalize can cite a root-doc runner or refuse");
         } else {
             rejected_slug = slug;
             log("Proof slot real=false; rejecting slug=" + slug);
@@ -1220,8 +1320,8 @@ fin_prompt += "Do not keep slug next-goal. Do not leak planner internals (schema
 fin_prompt += "If adversarial slots were unverified, keep the synthesize pick when it exists; otherwise pick the strongest file-backed candidate. ";
 fin_prompt += "If rejected_slug is non-empty, that slug was disproved. Do not return it. A title in pick.rejected is not disproved unless its slug equals rejected_slug. ";
 fin_prompt += "Pick a different surviving candidate. A file-backed command qualifies. EVIDENCE also qualifies when its quote is a still-open checklist line and the suite is only a fence. ";
-fin_prompt += "Return an empty slug and empty goal_md and next_md only when every surviving candidate lacks both. Set refuse_reason to one sentence when slug is empty, and to an empty string when slug is set. ";
-fin_prompt += "If the synthesize command is UNKNOWN, open the repo-root AGENTS.md, Makefile, package.json, and scripts/verify.sh and use the runner those files name for the changing package. Set UNKNOWN only when none of them name a runner. The Invariant is the assertion that is still false on trunk. Done when runs that existing runner and states the assertion the runner must gain. ";
+fin_prompt += "Return an empty slug and empty goal_md and next_md when every surviving candidate lacks a file-backed command and an open EVIDENCE line, or when the product command would still be the token UNKNOWN. Set refuse_reason to one sentence when slug is empty, and to an empty string when slug is set. ";
+fin_prompt += "If the synthesize command is UNKNOWN, open the repo-root AGENTS.md, Makefile, package.json, and scripts/verify.sh and use the runner those files name for the changing package. If none of them name a runner, return an empty slug and refuse_reason. Do not write the token UNKNOWN as a product command or as its own line in the acceptance group. The Invariant is the assertion that is still false on trunk. Done when runs that existing runner and states the assertion the runner must gain. ";
 fin_prompt += "Exactly two rejected alternatives, not more. ";
 fin_prompt += "Terminal is exactly one of local-commit, submit-then-archive, leave-shell, no-submit. ";
 fin_prompt += "If terminal_notes contain leave-shell, write a heading '## Terminal' with the line 'Terminal: leave-shell' and the sentence 'this session does not submit' only under that heading. ";
@@ -1303,6 +1403,14 @@ if rejected_slug != "" && (slug == "" || slug == rejected_slug) {
     next_md = "";
     skip_output = true;
     log("Rejected slug was not replaced; not writing goals");
+}
+if publishes_unknown_command(goal_md) || publishes_unknown_command(next_md) {
+    log("Product command is still UNKNOWN; not writing goals");
+    refuse_reason = short_reason("done_when_command is UNKNOWN and no root runner was cited");
+    slug = "";
+    goal_md = "";
+    next_md = "";
+    skip_output = true;
 }
 if non_empty(goal_md) {
     if contains_str(goal_md, "As-of (not acceptance)") != true {

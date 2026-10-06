@@ -339,6 +339,12 @@ fn self_check() {
     if http_url("https://github.com/example/repo/pull/1") != true { return "https rejected"; }
     if http_url("") { return "empty url accepted"; }
     if http_url("not a url") { return "bare url accepted"; }
+    if runnable_product_command("pytest -q") != true { return "runner rejected"; }
+    if runnable_product_command("UNKNOWN") { return "UNKNOWN command accepted"; }
+    if runnable_product_command("  UNKNOWN") { return "padded UNKNOWN accepted"; }
+    if runnable_product_command("") { return "empty command accepted"; }
+    if runnable_product_command("UNKNOWN && pytest") { return "chained UNKNOWN accepted"; }
+    if runnable_product_command("PATH=\".venv/bin:$PATH\" UNKNOWN") { return "prefixed UNKNOWN accepted"; }
     ""
 }
 
@@ -350,6 +356,63 @@ fn as_array(v) {
 
 fn terminal_ok(t) {
     t == "local-commit" || t == "no-submit" || t == "submit-then-archive" || t == "leave-shell"
+}
+
+fn trim_command_token(s) {
+    let t = trimmed(s);
+    let guard = 0;
+    while t.len() > 0 && guard < 8 {
+        let ch = t.sub_string(t.len() - 1, 1);
+        if ch == "." || ch == "," || ch == ";" || ch == ":" || ch == ")" || ch == "\"" || ch == "'" {
+            t = t.sub_string(0, t.len() - 1);
+            t = trimmed(t);
+        } else {
+            break;
+        }
+        guard += 1;
+    }
+    guard = 0;
+    while t.len() > 0 && guard < 8 {
+        let ch = t.sub_string(0, 1);
+        if ch == "(" || ch == "\"" || ch == "'" {
+            t = t.sub_string(1, t.len() - 1);
+            t = trimmed(t);
+        } else {
+            break;
+        }
+        guard += 1;
+    }
+    t
+}
+
+fn has_unknown_shell_word(text) {
+    if type_of(text) != "string" || text == "" { return false; }
+    let n = text.len();
+    let i = 0;
+    let word = "";
+    while i <= n {
+        let at_end = i == n;
+        let ch = "";
+        if at_end != true { ch = text.sub_string(i, 1); }
+        let break_word = at_end;
+        if ch == " " || ch == "\t" || ch == "&" || ch == "|" || ch == ";" { break_word = true; }
+        if break_word == true {
+            if trim_command_token(word) == "UNKNOWN" { return true; }
+            word = "";
+        } else {
+            word += ch;
+        }
+        if at_end { break; }
+        i += 1;
+    }
+    false
+}
+
+fn runnable_product_command(cmd) {
+    let c = trimmed(cmd);
+    if c == "" { return false; }
+    if has_unknown_shell_word(c) { return false; }
+    true
 }
 
 let check_error = self_check();
@@ -396,9 +459,13 @@ let next_path = map_str(loaded.output, "next_path");
 let invariant = map_str(loaded.output, "invariant");
 let product_command = map_str(loaded.output, "product_command");
 let terminal = map_str(loaded.output, "terminal");
-if terminal_ok(terminal) != true || invariant == "" || product_command == "" {
+if terminal_ok(terminal) != true || invariant == "" || runnable_product_command(product_command) != true {
+    let why = "Goal file is missing a terminal, invariant, or one product command";
+    if trimmed(product_command) == "UNKNOWN" {
+        why = "Product command is UNKNOWN; refusing to implement";
+    }
     complete(#{
-        summary: "Goal file is missing a terminal, invariant, or one product command",
+        summary: why,
         ok: false,
         terminal: terminal,
         companion: "goal-execute",
