@@ -701,12 +701,61 @@ fn normalize_labels(raw) {
     out
 }
 
-fn state_by_type(states, kind) {
-    let found = ();
+fn preferred_state_name(kind) {
+    if kind == "backlog" { return "Backlog"; }
+    if kind == "unstarted" { return "Todo"; }
+    if kind == "started" { return "In Progress"; }
+    if kind == "completed" { return "Done"; }
+    if kind == "canceled" { return "Canceled"; }
+    if kind == "triage" { return "Triage"; }
+    if kind == "duplicate" { return "Duplicate"; }
+    ""
+}
+
+fn states_of_type(states, kind) {
+    let matches = [];
     for item in states {
-        if found == () && map_str(item, "type") == kind { found = item; }
+        if map_str(item, "type") == kind { matches.push(item); }
     }
-    found
+    matches
+}
+
+// Custom states can share a type and sort first. Gated is backlog on MSTUP and
+// was listed before Backlog, so the first match is not the default lane.
+fn state_by_type(states, kind) {
+    let matches = states_of_type(states, kind);
+    if matches.len() == 0 { return (); }
+    let preferred = preferred_state_name(kind);
+    if preferred != "" {
+        let want = lower_ascii(preferred);
+        for item in matches {
+            if lower_ascii(map_str(item, "name")) == want { return item; }
+        }
+    }
+    if matches.len() == 1 { return matches[0]; }
+    ()
+}
+
+fn state_miss_detail(states, kind) {
+    let count = states_of_type(states, kind).len();
+    let preferred = preferred_state_name(kind);
+    if count > 1 && preferred != "" {
+        let text = "no ";
+        text += preferred;
+        text += " state among ";
+        text += count.to_string();
+        text += " ";
+        text += kind;
+        text += " states";
+        return text;
+    }
+    ""
+}
+
+fn move_detail(name) {
+    let text = "move to ";
+    text += name;
+    text
 }
 
 fn label_known(labels, name) {
@@ -785,13 +834,20 @@ fn census(issues, cycle_id, cycle_ok, states, max_shipped, max_unlabeled) {
             if inside { dest_type = "unstarted"; }
             let dest = state_by_type(states, dest_type);
             if dest != () {
-                let detail = map_str(dest, "name");
-                actions.push(make_action(issue, "leave_triage", map_str(dest, "name"), dest_type, "", "", detail));
+                let name = map_str(dest, "name");
+                actions.push(make_action(issue, "leave_triage", name, dest_type, "", "", move_detail(name)));
+            } else {
+                let why = state_miss_detail(states, dest_type);
+                if why != "" { findings.push(make_finding(issue, "state_ambiguous", why)); }
             }
         } else if inside && status == "backlog" {
             let dest = state_by_type(states, "unstarted");
             if dest != () {
-                actions.push(make_action(issue, "cycle_unstarted", map_str(dest, "name"), "unstarted", "", "", map_str(dest, "name")));
+                let name = map_str(dest, "name");
+                actions.push(make_action(issue, "cycle_unstarted", name, "unstarted", "", "", move_detail(name)));
+            } else {
+                let why = state_miss_detail(states, "unstarted");
+                if why != "" { findings.push(make_finding(issue, "state_ambiguous", why)); }
             }
         } else if inside && (status == "completed" || status == "canceled") {
             let evidence = map_str(issue, "state_name");
@@ -979,11 +1035,13 @@ fn done_from(issues, proposals, verdicts, states, confirm_done) {
         if verdict_ok(verdict) {
             let evidence = map_str(proposal, "evidence");
             if completed == () {
+                let why = state_miss_detail(states, "completed");
+                if why == "" { why = "team has no completed state"; }
                 held.push(#{
                     identifier: id,
                     kind: "mark_done",
                     status: "report_only",
-                    detail: "team has no completed state",
+                    detail: why,
                     evidence: evidence,
                 });
             } else if !confirm_done {
@@ -1164,6 +1222,56 @@ fn self_check() {
     if no_cycle.actions.len() != 1 { return "triage without cycle count"; }
     let missing_state = census([sample_issue("T-OUT", "triage", 2, "", [], [], false)], "", false, [], 15, 20);
     if missing_state.actions.len() != 0 { return "missing state"; }
+    if finding_has(missing_state.findings, "T-OUT", "state_ambiguous") { return "missing state finding"; }
+    let custom_first = [
+        #{ name: "Rework", type: "started", id: "rw" },
+        #{ name: "Gated", type: "backlog", id: "g" },
+        #{ name: "Backlog", type: "backlog", id: "b" },
+        #{ name: "Todo", type: "unstarted", id: "u" },
+        #{ name: "Done", type: "completed", id: "d" },
+        #{ name: "In Progress", type: "started", id: "ip" },
+    ];
+    let gated = census([sample_issue("MS-714", "triage", 1, "", [], [], false)], "c1", true, custom_first, 15, 20);
+    let gated_row = first_action(gated.actions, "MS-714");
+    if map_str(gated_row, "state_name") != "Backlog" { return "custom backlog first"; }
+    if map_str(gated_row, "state_type") != "backlog" { return "custom backlog type"; }
+    if map_str(gated_row, "detail") != "move to Backlog" { return "custom backlog detail"; }
+    let gated_in = census([sample_issue("MS-714", "triage", 1, "c1", [], [], false)], "c1", true, custom_first, 15, 20);
+    if map_str(first_action(gated_in.actions, "MS-714"), "state_name") != "Todo" { return "custom triage in cycle"; }
+    let ready_first = [
+        #{ name: "Ready", type: "unstarted", id: "r" },
+        #{ name: "Todo", type: "unstarted", id: "u" },
+        #{ name: "Backlog", type: "backlog", id: "b" },
+    ];
+    let ready_move = census([sample_issue("B-IN", "backlog", 1, "c1", [], [], false)], "c1", true, ready_first, 15, 20);
+    if map_str(first_action(ready_move.actions, "B-IN"), "state_name") != "Todo" { return "custom todo first"; }
+    let only_custom = [
+        #{ name: "Gated", type: "backlog", id: "g" },
+        #{ name: "Icebox", type: "backlog", id: "i" },
+    ];
+    let ambiguous = census([sample_issue("MS-714", "triage", 1, "", [], [], false)], "", false, only_custom, 15, 20);
+    if ambiguous.actions.len() != 0 { return "ambiguous backlog action"; }
+    if !finding_has(ambiguous.findings, "MS-714", "state_ambiguous") { return "ambiguous backlog finding"; }
+    let renamed = [#{ name: "Icebox", type: "backlog", id: "i" }];
+    let renamed_census = census([sample_issue("MS-714", "triage", 1, "", [], [], false)], "", false, renamed, 15, 20);
+    let renamed_row = first_action(renamed_census.actions, "MS-714");
+    if map_str(renamed_row, "state_name") != "Icebox" { return "renamed backlog"; }
+    if map_str(state_by_type(custom_first, "started"), "name") != "In Progress" { return "custom started first"; }
+    if map_str(state_by_type(custom_first, "completed"), "name") != "Done" { return "custom done name"; }
+    let odd_done = [
+        #{ name: "Shipped", type: "completed", id: "s" },
+        #{ name: "Released", type: "completed", id: "r" },
+    ];
+    let held_done = done_from(
+        [sample_issue("MS-1", "started", 2, "c1", [], [], false)],
+        [#{ identifier: "MS-1", evidence: "abc" }],
+        [#{ identifier: "MS-1", accept: true, evidence: "on trunk" }],
+        odd_done,
+        true
+    );
+    if held_done.actions.len() != 0 { return "odd done action"; }
+    if held_done.held.len() != 1 { return "odd done held"; }
+    if !map_str(held_done.held[0], "detail").contains("no Done state") { return "odd done detail"; }
     let picked = select_apply([
         #{ identifier: "A", kind: "leave_triage" },
         #{ identifier: "B", kind: "mark_done" },
