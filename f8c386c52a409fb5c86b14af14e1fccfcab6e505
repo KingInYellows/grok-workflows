@@ -1,0 +1,18 @@
+README.md
+  h_6000354274ce50 16
+goal-execute.rhai
+  h_6000354274ce50 3,9-10,52,59-60,68,72,101-191,202-207,216,218,296-306,314,327,329,333-336,338,347,349-352,354-361,363-368,380,382,403,405-409,415-438
+goal-planning.rhai
+  h_6000354274ce50 253-280,286-289,293-304,365-366,368,605-615,1234,1236,1338-1342,1386
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f8c386c52a409fb5c86b14af14e1fccfcab6e505",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
