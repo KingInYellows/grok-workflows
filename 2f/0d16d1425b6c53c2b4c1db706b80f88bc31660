@@ -1,0 +1,19 @@
+graphite-pr-review.rhai
+  s_99030e4253364c::t_9ec96d68ed47fe 4,106-120,185-247,264,267-270,285-287,291-293,295-299,320,322,325-330,339-346,354-361,371,373,381,383,395,397,407,409,424,426,455,614,620,623,629-645,680,705-707,709-745,747,752-757,817,823,825,892-893,895,903,905,989,1029,1104,1183,1268
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2f0d16d1425b6c53c2b4c1db706b80f88bc31660",
+  "prompts": {},
+  "sessions": {
+    "s_99030e4253364c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d071984-2c60-4c4a-b608-cc31f4d4e675",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
