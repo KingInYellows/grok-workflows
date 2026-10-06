@@ -1,0 +1,14 @@
+graphite-pr-review.rhai
+  h_6000354274ce50 4,23-24,301-302,320,328-332,340,342,344,352,354,356,358-359,442,451-453,658-659,767-775,827-828,836,904-905,908,916-926,928
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5b9e93d0922dae3ed2490d8a69f302ef91075eae",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
