@@ -1,7 +1,7 @@
 let meta = #{
     name: "graphite-pr-review",
     description: "Review one Graphite PR, refute findings, plan repairs, then optionally commit and submit",
-    when_to_use: "One open Graphite pull request. Read-only review unless args.apply is true. Submit only when args.submit is true. Never merges. /graphite-pr-review or /workflow graphite-pr-review. Workflow version 1.0.0.",
+    when_to_use: "One open Graphite pull request. Read-only review unless args.apply is true. Submit only when args.submit is true. Never merges or checks out. Untracked plans/, .grok/, docs/goals/, docs/brainstorms/, and docs/solutions/ do not block. A read-only review does not pause on other uncommitted files. Pass args.repo when the pull request is not in this checkout. /graphite-pr-review or /workflow graphite-pr-review. Workflow version 1.0.3.",
     phases: [
         #{ title: "Collect", detail: "Parent diff and unanswered review threads" },
         #{ title: "Review", detail: "Four read-only reviewers on the incremental diff" },
@@ -103,6 +103,21 @@ fn as_array(value) {
     }
 }
 
+fn pr_numbers_from(text) {
+    let found = [];
+    if type_of(text) != "string" {
+        return found;
+    }
+    let parts = text.split(" ");
+    for part in parts {
+        let n = as_int(trimmed(part), 0, 0, 1000000000);
+        if n > 0 && !list_has(found, n) {
+            found.push(n);
+        }
+    }
+    found
+}
+
 fn list_has(items, value) {
     if type_of(items) != "array" { return false; }
     for item in items {
@@ -167,6 +182,69 @@ fn clean_paths(raw, limit) {
     #{ paths: out, dropped: dropped }
 }
 
+fn starts_with_text(text, prefix) {
+    if text.len() < prefix.len() { return false; }
+    text.sub_string(0, prefix.len()) == prefix
+}
+
+fn strip_dot_slash(text) {
+    if text.len() >= 2 && text.sub_string(0, 2) == "./" {
+        return text.sub_string(2, text.len() - 2);
+    }
+    text
+}
+
+fn strip_one_slash(text) {
+    if text.len() > 1 && text.sub_string(text.len() - 1, 1) == "/" {
+        return text.sub_string(0, text.len() - 1);
+    }
+    text
+}
+
+fn normalize_repo_path(path) {
+    strip_one_slash(strip_one_slash(strip_dot_slash(trimmed(path))))
+}
+
+fn local_note_path(path) {
+    let p = normalize_repo_path(path);
+    if p == "plans" || p == ".grok" || p == "docs/goals" || p == "docs/brainstorms" || p == "docs/solutions" {
+        return true;
+    }
+    if starts_with_text(p, "plans/") { return true; }
+    if starts_with_text(p, ".grok/") { return true; }
+    if starts_with_text(p, "docs/goals/") { return true; }
+    if starts_with_text(p, "docs/brainstorms/") { return true; }
+    if starts_with_text(p, "docs/solutions/") { return true; }
+    false
+}
+
+fn split_local_notes(raw) {
+    let blocking = [];
+    let ignored = [];
+    let dropped = 0;
+    for item in as_array(raw) {
+        let p = normalize_repo_path(item);
+        if p == "" || bad_path(p) {
+            dropped += 1;
+            continue;
+        }
+        if local_note_path(p) {
+            if list_has(ignored, p) || ignored.len() >= 12 {
+                dropped += 1;
+            } else {
+                ignored.push(p);
+            }
+            continue;
+        }
+        if list_has(blocking, p) || blocking.len() >= 12 {
+            dropped += 1;
+        } else {
+            blocking.push(p);
+        }
+    }
+    #{ blocking: blocking, ignored: ignored, dropped: dropped }
+}
+
 fn ids_all_in(ids, allowed) {
     let raw = as_array(ids);
     if raw.len() == 0 { return false; }
@@ -183,9 +261,13 @@ fn agent_map(r) {
     r.output
 }
 
-fn guardrails_text() {
+fn guardrails_text(repo) {
     let t = "HARD RULES:\n";
     t += "- Never merge. Forbidden: gt merge, gh pr merge, merge-when-ready.\n";
+    if repo != "" {
+        t += "- The git repository is " + repo + ". Start every shell command there. For read_file, use an absolute path under that directory.\n";
+        t += "- Do not checkout a branch that another worktree already has checked out. Diff parent...branch from this directory instead.\n";
+    }
     t += "- Never git push. Never git rebase. Never git commit --amend.\n";
     t += "- Never gt submit --force. Never gt submit --stack. Never gt restack --upstack.\n";
     t += "- Never git add -A or git add . Stage named paths only.\n";
@@ -200,19 +282,21 @@ fn guardrails_text() {
     t
 }
 
-fn collect_prompt(pr_number) {
-    let p = "You collect one Graphite pull request for review. Use the shell. Do not edit, commit, submit, comment, or resolve.\n";
-    p += guardrails_text();
+fn collect_prompt(pr_number, repo) {
+    let p = "You collect one Graphite pull request for review. Use the shell. Do not edit, commit, submit, comment, resolve, stash, or checkout.\n";
+    p += guardrails_text(repo);
     p += "Support CLI: node " + support_cli() + "\n";
     p += "If that file is missing, do not invent a second client. Use git and gh for a read.\n";
     p += "Requested pr number is " + pr_number.to_string() + ". Zero means the open PR for the current branch.\n";
+    if repo != "" {
+        p += "Run every command after cd " + repo + ".\n";
+    }
     p += "Steps:\n";
-    p += "1. Run git status --porcelain. If any line is non-empty, set dirty=true and dirty_paths to those paths. Do not stash, checkout, or edit. Set ok=true and return. Empty porcelain means dirty=false.\n";
-    p += "2. Resolve the branch. If pr is 0, stay on the current branch. If pr is greater than 0, checkout that PR branch with: node " + support_cli() + " checkout --branch <branch>. If the CLI is missing: git fetch origin <branch> then git checkout <branch>. Never gt checkout. Never git fetch origin pr/<N>.\n";
-    p += "3. Parent is the immediate Graphite parent from gt parent or gt log short. Do not use origin/main unless that command names main.\n";
-    p += "4. Changed files are the repo-relative names from git diff <parent>...<branch> --name-only. Do not include names outside that diff.\n";
-    p += "5. Threads: if the support CLI exists, run node " + support_cli() + " pr-state --pr <n> once. Keep unresolved threads that have no reply yet. Drop resolved threads and threads that already have a reply. If the CLI is missing, use gh for a read-only list and set the same filter. Return at most 12 threads. Each thread needs thread_id, comment_id, is_bot, file, body, has_reply. has_reply must be false on every returned thread.\n";
-    p += "6. Set ok=true after those commands succeed. Set ok=false and error to stderr if the branch or parent cannot be resolved. An empty files list or an empty threads list is valid when the commands succeeded.\n";
+    p += "1. Resolve the pull request with gh pr view. If the number is 0, omit the number so gh uses the current branch. Read number, headRefName, and baseRefName. Branch is headRefName. Parent is baseRefName. Do not replace parent with main unless baseRefName is main. Never gt checkout. Never git fetch origin pr/<N>. Never git checkout.\n";
+    p += "2. Run git status --porcelain. Do not return early. Do not stash. Uncommitted files are not part of the pull request. Untracked paths under plans/, .grok/, docs/goals/, docs/brainstorms/, and docs/solutions/ are local notes: leave them out of dirty_paths. Set dirty=true only when some other path is modified, deleted, or untracked. Set dirty=false when porcelain is empty or every path is one of those local notes. Set on_branch=true only when git branch --show-current equals headRefName. Otherwise set on_branch=false. Do not checkout to make them match.\n";
+    p += "3. Changed files are git diff <parent-ref>...<head-ref> --name-only. For each name, use the local ref when git rev-parse --verify --quiet <name> succeeds. When it does not, run git fetch origin <name> and use origin/<name>. Do not checkout. Do not include names outside that diff. Report branch as headRefName and parent as baseRefName, without an origin/ prefix.\n";
+    p += "4. Threads: if the support CLI exists, run node " + support_cli() + " pr-state --pr <n> once. Keep unresolved threads that have no reply yet. Drop resolved threads and threads that already have a reply. If the CLI is missing, use gh for a read-only list and set the same filter. Return at most 12 threads. Each thread needs thread_id, comment_id, is_bot, file, body, has_reply. has_reply must be false on every returned thread.\n";
+    p += "5. Set ok=true after those commands succeed. Set ok=false and error to stderr if the branch or parent cannot be resolved. An empty files list or an empty threads list is valid when the commands succeeded. A dirty tree is still ok=true.\n";
     p += "PR number packet follows.\n";
     p += "<packet>\n";
     p += json_encode(#{ pr: pr_number });
@@ -233,13 +317,17 @@ fn review_focus(dimension) {
     "Read AGENTS.md when that file exists and report blocked patterns the incremental diff introduces. Use only patterns written in that file. If AGENTS.md is absent, return an empty findings list after you confirm the absence. Skip style nits."
 }
 
-fn review_prompt(dimension, packet_json, finding_cap) {
+fn review_prompt(dimension, packet_json, finding_cap, repo) {
     let p = "You are a read-only reviewer for one Graphite pull request. Dimension: " + dimension + ".\n";
-    p += guardrails_text();
+    p += guardrails_text(repo);
     p += review_focus(dimension);
     p += "\n";
-    p += "Forbidden: edit, commit, submit, comment, resolve, push, rebase.\n";
-    p += "Run git diff <parent>...<branch> and read every file you cite with read_file. The parent and branch are in the packet. Do not diff against main unless the packet parent is main.\n";
+    p += "Forbidden: edit, commit, submit, comment, resolve, push, rebase, checkout.\n";
+    p += "Shell is only for git diff and git show.\n";
+    if repo != "" {
+        p += "cd " + repo + " before those commands.\n";
+    }
+    p += "Diff with git diff <parent-ref>...<head-ref>. Read a cited file with git show <head-ref>:<path>. The packet parent and branch are short names. Use the local ref when git rev-parse --verify --quiet <name> succeeds. Otherwise use origin/<name>. Do not diff against main unless the packet parent is main. Ignore uncommitted working-tree edits; they are not part of the pull request.\n";
     p += "Return at most " + finding_cap.to_string() + " findings. Each finding needs file, line, issue, and evidence. evidence is a quote from the file or the diff. line is an integer, or 0 when you have no line.\n";
     p += "An empty findings list is valid only after you have read the diff. Do not invent files.\n";
     p += "<packet>\n";
@@ -248,10 +336,14 @@ fn review_prompt(dimension, packet_json, finding_cap) {
     p
 }
 
-fn skeptic_prompt(finding_json) {
-    let p = "You are a read-only skeptic. Refute this review finding. Use read_file on the cited file and git diff against the parent in the packet.\n";
-    p += guardrails_text();
-    p += "Forbidden: edit, commit, submit, comment, resolve.\n";
+fn skeptic_prompt(finding_json, repo) {
+    let p = "You are a skeptic. Refute this review finding. Use git show <head-ref>:<path> for the cited file and git diff <parent-ref>...<head-ref>. The packet parent and branch are short names. Use the local ref when it exists. Otherwise use origin/<name>. Ignore uncommitted working-tree edits.\n";
+    p += guardrails_text(repo);
+    p += "Shell is only for git diff and git show.\n";
+    if repo != "" {
+        p += "cd " + repo + " before those commands.\n";
+    }
+    p += "Forbidden: edit, commit, submit, comment, resolve, checkout.\n";
     p += "Set real=true only when you independently found the defect and evidence is a quote you read. Otherwise set real=false. Missing evidence means real=false.\n";
     p += "<packet>\n";
     p += finding_json;
@@ -259,10 +351,14 @@ fn skeptic_prompt(finding_json) {
     p
 }
 
-fn classifier_prompt(row_json) {
-    let p = "You are a read-only classifier for one unresolved GitHub review thread that has no reply yet. Read the cited file if file is non-empty.\n";
-    p += guardrails_text();
-    p += "Forbidden: edit, commit, submit, comment, resolve, reply.\n";
+fn classifier_prompt(row_json, repo, branch) {
+    let p = "You classify one unresolved GitHub review thread that has no reply yet. When file is non-empty, read it with git show <head-ref>:<path>. Branch short name: " + branch + ". Use the local ref when it exists. Otherwise use origin/<name>. Ignore uncommitted working-tree edits.\n";
+    p += guardrails_text(repo);
+    p += "Shell is only for git show and git diff.\n";
+    if repo != "" {
+        p += "cd " + repo + " before those commands.\n";
+    }
+    p += "Forbidden: edit, commit, submit, comment, resolve, reply, checkout.\n";
     p += "Set class to one of: actionable_valid, already_fixed, duplicate, informational, false_positive, human_blocker.\n";
     p += "actionable_valid means the thread asks for a code change that is still missing. false_positive means the claim is not a defect. human_blocker means a human asked for a decision and the change is not clear.\n";
     p += "evidence is a quote from the diff, the file, or the thread body. If you cannot quote evidence, use informational.\n";
@@ -272,9 +368,9 @@ fn classifier_prompt(row_json) {
     p
 }
 
-fn synthesizer_prompt(packet_json) {
+fn synthesizer_prompt(packet_json, repo) {
     let p = "You group kept ids. You are read-only. You must not invent findings, threads, files, or ids.\n";
-    p += guardrails_text();
+    p += guardrails_text(repo);
     p += "The packet is the only kept set. Return groups of two or more ids from that set that describe the same defect. Return an empty groups list when nothing overlaps. Do not add ids that are absent from the packet.\n";
     p += "<packet>\n";
     p += packet_json;
@@ -282,9 +378,9 @@ fn synthesizer_prompt(packet_json) {
     p
 }
 
-fn planner_prompt(packet_json, repair_cap, file_cap) {
+fn planner_prompt(packet_json, repair_cap, file_cap, repo) {
     let p = "You write a repair plan for one Graphite pull request. You are read-only. Do not edit, commit, submit, or comment.\n";
-    p += guardrails_text();
+    p += guardrails_text(repo);
     p += "Use only source ids present in the packet. Return at most " + repair_cap.to_string() + " repairs.\n";
     p += "Each repair needs id, source_ids, files, thread_ids, test_command, and change.\n";
     p += "files has at most " + file_cap.to_string() + " repo-relative paths. thread_ids lists packet thread ids the repair addresses, or an empty list.\n";
@@ -296,9 +392,9 @@ fn planner_prompt(packet_json, repair_cap, file_cap) {
     p
 }
 
-fn plan_skeptic_prompt(packet_json) {
+fn plan_skeptic_prompt(packet_json, repo) {
     let p = "You are a read-only skeptic for a repair plan. Do not edit, commit, submit, or comment.\n";
-    p += guardrails_text();
+    p += guardrails_text(repo);
     p += "For every repair id in the packet, return one verdict with id, accept, and evidence.\n";
     p += "Set accept=true only when every source id is in the packet, every file is a relative path the change needs, and the change is required by those sources. Otherwise accept=false.\n";
     p += "evidence is required. Empty evidence means the repair is rejected.\n";
@@ -308,9 +404,9 @@ fn plan_skeptic_prompt(packet_json) {
     p
 }
 
-fn repair_prompt(packet_json, submit_follows, edit_cap) {
+fn repair_prompt(packet_json, submit_follows, edit_cap, repo) {
     let p = "You apply an accepted repair list on the current Graphite branch. Capability is limited to this list.\n";
-    p += guardrails_text();
+    p += guardrails_text(repo);
     p += "You must not submit, reply, resolve, push, rebase, or git commit --amend.\n";
     p += "Edit only files named on the repairs. At most " + edit_cap.to_string() + " files. If a change is already present in HEAD and git status --porcelain is empty, do not edit. Set already_present=true and clean=true.\n";
     p += "Run only test_command values from the repairs. Skip a command whose value is none. Do not invent a suite. If every command is none, set tests_passed=true and note that no test was planned. If a command fails, set tests_passed=false and do not commit.\n";
@@ -325,9 +421,9 @@ fn repair_prompt(packet_json, submit_follows, edit_cap) {
     p
 }
 
-fn submit_prompt(packet_json, reply_cap) {
+fn submit_prompt(packet_json, reply_cap, repo) {
     let p = "You submit one Graphite branch. Do not edit files. Do not stage. Do not commit.\n";
-    p += guardrails_text();
+    p += guardrails_text(repo);
     p += "Support CLI: node " + support_cli() + "\n";
     p += "Steps:\n";
     p += "1. Read git rev-parse HEAD and gh pr view <n> --json headRefOid,isDraft. If HEAD equals headRefOid, skip gt submit and set skipped_submit=true.\n";
@@ -356,6 +452,7 @@ let collect_schema = #{
         "parent": #{ "type": "string" },
         "branch": #{ "type": "string" },
         "pr": #{ "type": "integer" },
+        "on_branch": #{ "type": "boolean" },
         "files": #{ "type": "array", "maxItems": 80, "items": #{ "type": "string" } },
         "threads": #{
             "type": "array",
@@ -514,18 +611,38 @@ let submit_schema = #{
 };
 
 let pr_number = 0;
+let repo = "";
 let do_apply = false;
 let do_submit = false;
 let do_publish = false;
 let resolve_bots = false;
 let do_confirm = false;
+let query = "";
 if args != () {
     pr_number = as_int(map_get(args, "pr"), 0, 0, 1000000000);
+    repo = map_str(args, "repo");
     do_apply = as_bool(map_get(args, "apply"), false);
     do_submit = as_bool(map_get(args, "submit"), false);
     do_publish = as_bool(map_get(args, "publish"), false);
     resolve_bots = as_bool(map_get(args, "resolve_bots"), false);
     do_confirm = as_bool(map_get(args, "confirm"), false);
+    query = map_str(args, "query");
+    if query == "" {
+        query = map_str(args, "objective");
+    }
+}
+let named_prs = pr_numbers_from(query);
+if pr_number == 0 && named_prs.len() == 1 {
+    pr_number = named_prs[0];
+}
+if pr_number == 0 && named_prs.len() > 1 {
+    let msg = "This workflow reviews one pull request. The query named";
+    for n in named_prs {
+        msg += " ";
+        msg += n.to_string();
+    }
+    msg += ". Pass args.pr for one pull request and args.repo when it is not in this checkout. This workflow does not merge.";
+    complete(#{ path: "", report: msg, repairs: 0, repair_ran: false, submit_ran: false });
 }
 
 log("graphite-pr-review pr=" + pr_number.to_string() + " apply=" + bool_text(do_apply) + " submit=" + bool_text(do_submit) + " publish=" + bool_text(do_publish) + " resolve_bots=" + bool_text(resolve_bots) + " confirm=" + bool_text(do_confirm));
@@ -560,7 +677,7 @@ let repair_ready = false;
 
 phase("Collect");
 let collected = agent(
-    collect_prompt(pr_number),
+    collect_prompt(pr_number, repo),
     #{
         label: "collect",
         capability_mode: "execute",
@@ -585,33 +702,57 @@ if collect_out != () {
 }
 
 if collect_ok && map_bool(collect_out, "dirty", false) {
-    let dirty_paths = clean_paths(map_get(collect_out, "dirty_paths"), 12);
-    let dirty_msg = "Working tree is dirty. Clean it, then resume. Collect will run again.";
-    if dirty_paths.paths.len() > 0 {
-        dirty_msg += " Paths: " + join_strings(dirty_paths.paths) + ".";
+    let split = split_local_notes(map_get(collect_out, "dirty_paths"));
+    if split.ignored.len() > 0 {
+        log("local notes are not part of the review: " + join_strings(split.ignored));
     }
-    log("dirty worktree; waiting");
-    await_user("user", dirty_msg);
-    collected = agent(
-        collect_prompt(pr_number),
-        #{
-            label: "collect-again",
-            capability_mode: "execute",
-            output_schema: collect_schema,
-            phase: "Collect",
-        },
-    );
-    agent_calls += 1;
-    collect_out = agent_map(collected);
-    collect_ok = false;
-    if collect_out != () {
-        if map_get(collect_out, "ok") == false {
-            collect_error = map_str(collect_out, "error");
+    if split.dropped > 0 {
+        log("dropped " + split.dropped.to_string() + " dirty paths");
+    }
+    if split.blocking.len() == 0 {
+        log("only local notes are uncommitted; continuing");
+    } else if !do_apply {
+        log("uncommitted paths are outside this pull request: " + join_strings(split.blocking));
+    } else {
+        let dirty_msg = "Working tree has changes outside local notes. Clean those paths, then resume. Collect will run again.";
+        dirty_msg += " Paths: " + join_strings(split.blocking) + ".";
+        log("dirty worktree; waiting");
+        await_user("user", dirty_msg);
+        collected = agent(
+            collect_prompt(pr_number, repo),
+            #{
+                label: "collect-again",
+                capability_mode: "execute",
+                output_schema: collect_schema,
+                phase: "Collect",
+            },
+        );
+        agent_calls += 1;
+        collect_out = agent_map(collected);
+        collect_ok = false;
+        if collect_out != () {
+            if map_get(collect_out, "ok") == false {
+                collect_error = map_str(collect_out, "error");
+            } else {
+                collect_ok = true;
+                collect_error = "";
+                let again = split_local_notes(map_get(collect_out, "dirty_paths"));
+                if map_bool(collect_out, "dirty", false) && again.blocking.len() > 0 {
+                    log("worktree still has non-note changes; repair will not run");
+                    do_apply = false;
+                    do_submit = false;
+                }
+            }
         } else {
-            collect_ok = true;
-            collect_error = "";
+            collect_error = "collect agent returned no output";
         }
     }
+}
+
+if collect_ok && do_apply && !map_bool(collect_out, "on_branch", false) {
+    log("apply needs the pull request branch checked out; this run does not checkout");
+    do_apply = false;
+    do_submit = false;
 }
 
 if collect_ok {
@@ -673,14 +814,15 @@ let review_packet = json_encode(#{
     branch: head_branch,
     pr: found_pr,
     files: changed_files,
+    repo: repo,
 });
 let dimensions = ["correctness", "security", "tests", "invariants"];
 let review_jobs = [];
 for dimension in dimensions {
     review_jobs.push(#{
-        prompt: review_prompt(dimension, review_packet, MAX_FINDINGS_PER_REVIEW),
+        prompt: review_prompt(dimension, review_packet, MAX_FINDINGS_PER_REVIEW, repo),
         label: "review:" + dimension,
-        capability_mode: "read-only",
+        capability_mode: "execute",
         output_schema: findings_schema,
         phase: "Review",
     });
@@ -747,9 +889,10 @@ if findings.len() > 0 || threads.len() > 0 {
                 evidence: row.evidence,
                 parent: parent_branch,
                 branch: head_branch,
-            })),
+                repo: repo,
+            }), repo),
             label: "skeptic:" + row.id,
-            capability_mode: "read-only",
+            capability_mode: "execute",
             output_schema: skeptic_schema,
             phase: "Triage",
         });
@@ -757,9 +900,9 @@ if findings.len() > 0 || threads.len() > 0 {
     let skeptic_count = findings.len();
     for row in threads {
         triage_jobs.push(#{
-            prompt: classifier_prompt(json_encode(row)),
+            prompt: classifier_prompt(json_encode(row), repo, head_branch),
             label: "classify:" + row.id,
-            capability_mode: "read-only",
+            capability_mode: "execute",
             output_schema: classifier_schema,
             phase: "Triage",
         });
@@ -843,7 +986,7 @@ if kept_ids.len() > 0 {
         kept_rows.push(#{ id: row.id, kind: "actionable_valid", file: row.file, issue: clip(row.body, 200) });
     }
     let grouped = agent(
-        synthesizer_prompt(json_encode(#{ ids: kept_ids, rows: kept_rows })),
+        synthesizer_prompt(json_encode(#{ ids: kept_ids, rows: kept_rows }), repo),
         #{
             label: "synthesize",
             capability_mode: "read-only",
@@ -883,7 +1026,7 @@ if pool_count > 0 {
             findings: confirmed,
             actionable: actionable,
             groups: groups,
-        }), MAX_REPAIRS, MAX_FILES_PER_REPAIR),
+        }), MAX_REPAIRS, MAX_FILES_PER_REPAIR, repo),
         #{
             label: "plan",
             capability_mode: "read-only",
@@ -958,7 +1101,7 @@ if pool_count > 0 {
             plan_skeptic_prompt(json_encode(#{
                 kept_ids: kept_ids,
                 repairs: candidates,
-            })),
+            }), repo),
             #{
                 label: "plan-skeptic",
                 capability_mode: "read-only",
@@ -1037,7 +1180,7 @@ if do_apply && repairs.len() > 0 {
             branch: head_branch,
             pr: found_pr,
             repairs: repairs,
-        }), do_submit, MAX_EDIT_FILES),
+        }), do_submit, MAX_EDIT_FILES, repo),
         #{
             label: "repair",
             capability_mode: "all",
@@ -1122,7 +1265,7 @@ if do_submit && repair_ready {
             reply_list: reply_list,
             resolve_list: resolve_list,
             sha_hint: repair_sha,
-        }), MAX_REPLIES),
+        }), MAX_REPLIES, repo),
         #{
             label: "submit",
             capability_mode: "execute",
