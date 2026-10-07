@@ -1,0 +1,14 @@
+ship-next-issue.rhai
+  h_6000354274ce50 182-184,200-205,373-383,432-439,458-498,667-683,744-755,844-905,927,937-948,952-960,997,1275,1279-1291,1628-1635,1641-1645,1655-1659,1746-1750,1847-1851
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fe76dea288624acfb0fed4f37b16ed79be4ec61e",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
