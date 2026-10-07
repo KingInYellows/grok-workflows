@@ -210,13 +210,22 @@ fn starts_with(text, prefix) {
     text.sub_string(0, m) == prefix
 }
 
+fn strip_once(text, prefix) {
+    if starts_with(text, prefix) {
+        let m = prefix.len();
+        return text.sub_string(m, text.len() - m);
+    }
+    text
+}
+
 fn trunk_name(raw) {
     let n = trimmed(raw);
-    if starts_with(n, "refs/heads/") {
-        n = n.sub_string(11, n.len() - 11);
+    // A raw ref loses one prefix. origin/release is already the branch name.
+    if starts_with(n, "refs/remotes/origin/") {
+        return strip_once(n, "refs/remotes/origin/");
     }
-    if starts_with(n, "origin/") {
-        n = n.sub_string(7, n.len() - 7);
+    if starts_with(n, "refs/heads/") {
+        return strip_once(n, "refs/heads/");
     }
     n
 }
@@ -233,6 +242,13 @@ fn safe_branch(name) {
     if n.contains("\"") || n.contains("\n") { return false; }
     if n.sub_string(0, 1) == "-" { return false; }
     true
+}
+
+fn quoted_origin(trunk) {
+    let q = "'origin/";
+    q += trunk;
+    q += "'";
+    q
 }
 
 fn priority_rank(p) {
@@ -1312,21 +1328,37 @@ fn self_check() {
     if !label_grounded("Backend hosts the guest", "backend") { return "label start"; }
     if !label_grounded("runs on Backend", "backend") { return "label end"; }
     if label_grounded("the ci-watcher owns this", "ci") { return "label prefix"; }
-    if trunk_name("origin/main") != "main" { return "strip origin"; }
+    if trunk_name("refs/remotes/origin/main") != "main" { return "strip remote"; }
+    if trunk_name("refs/remotes/origin/origin/release") != "origin/release" { return "strip remote once"; }
+    if trunk_name("origin/release") != "origin/release" { return "keep origin branch"; }
+    if trunk_name("origin/main") != "origin/main" { return "keep origin main"; }
     if trunk_name("refs/heads/develop") != "develop" { return "strip refs"; }
-    if trunk_name("origin/release/1.0") != "release/1.0" { return "strip nested"; }
+    if trunk_name("refs/heads/origin/release/1.0") != "origin/release/1.0" { return "keep refs origin"; }
     if !safe_branch("release/1.0") { return "slash branch"; }
+    if !safe_branch("release>report") { return "metachar branch"; }
     if !safe_branch(trunk_name("refs/heads/origin/release/1.0")) { return "safe nested"; }
     if safe_branch("../main") { return "dotdot branch"; }
     if safe_branch("/main") { return "leading slash"; }
     if safe_branch("main/") { return "trailing slash"; }
     if safe_branch("a//b") { return "double slash"; }
-    if !inventory_prompt("", "", 150, 200).contains("head_behind") { return "behind prompt"; }
-    if !inventory_prompt("", "", 150, 200).contains("symbolic-ref") { return "origin head"; }
-    if inventory_prompt("", "", 150, 200).contains("gt trunk") { return "graphite trunk"; }
-    if !inventory_prompt("", "", 150, 200).contains("Do not run gt") { return "no gt"; }
+    let inv = inventory_prompt("", "", 150, 200);
+    if !inv.contains("head_behind") { return "behind prompt"; }
+    if !inv.contains("symbolic-ref") { return "origin head"; }
+    if !inv.contains("ls-remote --symref origin HEAD") { return "remote head"; }
+    if !inv.contains("refs/heads/TRUNK:refs/remotes/origin/TRUNK") { return "fetch refspec"; }
+    if !inv.contains("'HEAD..origin/TRUNK'") { return "quoted rev list"; }
+    if !inv.contains("head_behind to -1 only when") { return "fallback order"; }
+    if !inv.contains("origin/origin/release") { return "symbolic once"; }
+    if !inv.contains("release>report") { return "quoted fetch"; }
+    if inv.contains("gt trunk") { return "graphite trunk"; }
+    if !inv.contains("Do not run gt") { return "no gt"; }
     if !shipped_prompt("release/1.0", "[]").contains("origin/release/1.0") { return "slash trunk prompt"; }
     if !shipped_prompt("main", "[]").contains("--fixed-strings") { return "fixed grep"; }
+    if !shipped_prompt("main", "[]").contains("'origin/main'") { return "quoted trunk"; }
+    if !shipped_prompt("release>report", "[]").contains("'origin/release>report'") { return "quoted metachar"; }
+    if !shipped_prompt("main", "[]").contains("EX-10") { return "longer id"; }
+    if !shipped_prompt("main", "[]").contains("not a digit") { return "id boundary"; }
+    if !ship_skeptic_prompt("main", "{}").contains("EX-10") { return "skeptic id"; }
     if shipped_prompt("main", "[]").contains("Graphite") { return "graphite shipped"; }
     if !inventory_prompt("", "", 150, 200).contains("search_tool") { return "search prompt"; }
     if !inventory_prompt("", "", 150, 200).contains("Do not call get_issue") { return "index get"; }
@@ -1440,7 +1472,7 @@ fn inventory_prompt(team_override, only_issue, max_issues, max_labels) {
     p += "Steps:\n";
     p += "1. Run git remote get-url origin. The repo name is the final slash-separated segment, with a trailing .git removed. Do not use the directory from git rev-parse --show-toplevel. A worktree or another clone of the same origin is the same repository.\n";
     p += "2. The team override is in the packet. When it is non-empty, match that string. Otherwise match repo_name, case-insensitive, against the Linear team name or team key. Call search_tool, then the list-teams tool. Set team_match_count to the exact match count. When it is not 1, set ok false and return. Do not pick a fuzzy match. Do not guess a team from the directory name, a parent workspace, or a previous run.\n";
-    p += "3. Do not run gt. Do not initialize Graphite. Do not change git config. Run git symbolic-ref --short refs/remotes/origin/HEAD and take the branch name after origin/ as trunk. When that ref is missing, use main if origin/main exists, otherwise master if origin/master exists. Put only the branch name in trunk, with no origin/ or refs/heads/ prefix. Run git fetch origin TRUNK, then git rev-list --count HEAD..origin/TRUNK. Put that integer in head_behind. Zero means HEAD already contains origin/TRUNK. When the remote, the symbolic-ref, the fetch, or the rev-list fails, set trunk to an empty string, set head_behind to -1, and name the command in error.\n";
+    p += "3. Do not run gt. Do not initialize Graphite. Do not change git config. Resolve origin's current default branch from the remote before selecting trunk. Do not trust refs/remotes/origin/HEAD. git fetch does not update that symbolic ref after a default-branch rename. Run git ls-remote --symref origin HEAD. On the ref: line, trunk is the text after refs/heads/. Keep a slash that belongs to the branch. A branch named origin/release stays origin/release. When that remote query fails or prints no ref: line, run git symbolic-ref --short refs/remotes/origin/HEAD. That short name is a remote-tracking ref, so remove exactly one leading origin/ and keep the rest: origin/main becomes main, and origin/origin/release becomes origin/release. When that symbolic ref is missing, use main if origin/main exists, otherwise master if origin/master exists. A missing symbolic ref is not a failure when that fallback finds a branch. Do not clear trunk because symbolic-ref failed after a successful remote query or a successful fallback. Put only the branch name in trunk. Do not add an origin/ or refs/heads/ prefix. Single-quote every branch argument. A name such as release>report must not redirect or split the command. Fetch into the remote-tracking ref that rev-list reads. Do not rely on remote.origin.fetch to update refs/remotes/origin/TRUNK. Run git fetch origin 'refs/heads/TRUNK:refs/remotes/origin/TRUNK', substituting the branch name for TRUNK inside the single quotes. Then run git rev-list --count 'HEAD..origin/TRUNK', with the branch name inside those single quotes. Put that integer in head_behind. Zero means HEAD already contains that remote-tracking ref. Set trunk to an empty string and head_behind to -1 only when the remote query fails and the symbolic-ref and main/master fallback also fail, or when the fetch or the rev-list fails. Name the failed command in error.\n";
     p += "4. Read the team workflow states. For each state return name, type, and id. type is the Linear statusType: backlog, unstarted, started, triage, completed, or canceled.\n";
     p += "5. Read the team's existing labels with list_issue_labels. Call search_tool, then that tool for the matched team. Pass limit ";
     p += max_labels.to_string();
@@ -1498,10 +1530,10 @@ fn blocked_prompt(team_id, team_name) {
 fn shipped_prompt(trunk, packet_json) {
     let p = "You judge whether each Linear issue is already satisfied on the remote trunk. Do not edit files. Do not save Linear issues.\n";
     p += guardrails_text();
-    p += "Run git log origin/";
-    p += trunk;
-    p += " --fixed-strings --grep=IDENTIFIER for each issue. IDENTIFIER is that issue's identifier as a literal string. List every commit whose message contains that identifier. Do not stop after the first. Read file contents with git show origin/";
-    p += trunk;
+    p += "Run git log ";
+    p += quoted_origin(trunk);
+    p += " --fixed-strings --grep=IDENTIFIER for each issue. IDENTIFIER is that issue's identifier as a literal string, not a regular expression. Keep --fixed-strings so the identifier is not a regex. A fixed-string hit is not enough. Keep a commit only when the identifier has boundaries: the character before it, if any, is not a letter or digit, and the character after it is not a digit. EX-1 does not match EX-10. EX-10 does not match EX-1. Drop any other hit before listing commits. List every commit whose message contains that bounded identifier. Do not stop after the first. Read file contents with git show ";
+    p += quoted_origin(trunk);
     p += ":path. Do not read the working tree and do not read the local trunk branch. A stale checkout is not evidence. A pull request can be closed without merged true after its commit is on the remote trunk, including after a squash or rebase. That is not evidence the work is absent. Do not run gt. Do not require a stack tool or a forge.\n";
     p += "The packet description is the acceptance criteria or the Remaining scope section when the issue has one. Set shipped true only when every listed commit together fully meets that text. A partial slice stays shipped false. A mention that appears only in docs, a changelog, or a todos/debt note is not remaining work. Production code, tests, schema, and migrations still count. When unsure, set shipped false. evidence lists each commit subject, and it is empty when shipped is false.\n";
     p += "Return one proposal per packet issue.\n";
@@ -1531,13 +1563,13 @@ fn label_prompt(packet_json) {
 fn ship_skeptic_prompt(trunk, packet_json) {
     let p = "You check one shipped-but-open proposal. Do not edit.\n";
     p += guardrails_text();
-    p += "Inspect every commit named in the proposal evidence. Run git log -1 and git show for each of those commits on origin/";
-    p += trunk;
-    p += ". You may run one git grep on origin/";
-    p += trunk;
-    p += " for symbols the commit deletes. Do not read CI or GitHub Actions. Do not search the working tree. Return one verdict with identifier, accept, and evidence. Set accept true only when every named commit is on origin/";
-    p += trunk;
-    p += " and together they fully meet the acceptance in the packet description. A partial slice is accept false. A mention that appears only in docs, a changelog, or a todos/debt note is not remaining work. Production code, tests, schema, and migrations still count. Empty evidence is accept false.\n";
+    p += "Inspect every commit named in the proposal evidence. Run git log -1 and git show for each of those commits on ";
+    p += quoted_origin(trunk);
+    p += ". You may run one git grep on ";
+    p += quoted_origin(trunk);
+    p += " for symbols the commit deletes. Do not read CI or GitHub Actions. Do not search the working tree. Return one verdict with identifier, accept, and evidence. Set accept true only when every named commit is on ";
+    p += quoted_origin(trunk);
+    p += " and the commit message contains this issue's identifier as a bounded literal. The character before it, if any, is not a letter or digit, and the character after it is not a digit. EX-10 is not evidence for EX-1, and EX-1 is not evidence for EX-10. The commits together must fully meet the acceptance in the packet description. A partial slice is accept false. A mention that appears only in docs, a changelog, or a todos/debt note is not remaining work. Production code, tests, schema, and migrations still count. Empty evidence is accept false.\n";
     p += packet_line(packet_json);
     p
 }
