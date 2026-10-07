@@ -152,13 +152,52 @@ fn tools_read() {
     "Allowed tools: read_file, list_dir, and grep. Do not edit. Do not run git or Linear.\n"
 }
 
+fn control_path(path) {
+    let i = 0;
+    let n = path.len();
+    while i < n {
+        let ch = path.sub_string(i, 1);
+        if ch < " " || ch == "\u007f" || ch == "\u0085" || ch == "\u2028" || ch == "\u2029" {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 fn bad_path(path) {
     let p = trimmed(path);
     if p == "" { return true; }
     if p.sub_string(0, 1) == "/" { return true; }
     if p.contains("..") { return true; }
     if p.contains("node_modules") { return true; }
+    if control_path(p) { return true; }
     false
+}
+
+fn canonical_rel_path(path) {
+    let p = trimmed(path);
+    while p.len() >= 2 && p.sub_string(0, 2) == "./" {
+        p = p.sub_string(2, p.len() - 2);
+    }
+    let out = "";
+    let i = 0;
+    let n = p.len();
+    while i < n {
+        let dot_seg = false;
+        if i + 2 <= n && p.sub_string(i, 2) == "./" {
+            if i == 0 || p.sub_string(i - 1, 1) == "/" {
+                dot_seg = true;
+            }
+        }
+        if dot_seg {
+            i += 2;
+            continue;
+        }
+        out += p.sub_string(i, 1);
+        i += 1;
+    }
+    out
 }
 
 fn clean_paths(raw, limit) {
@@ -318,6 +357,18 @@ fn self_check() {
     if staged_foreign_paths(map_get(staged, "staged"), sample).len() != 1 { return "staged foreign"; }
     let planned_staged = dirty_entries(["M  tests/a.py"]);
     if staged_foreign_paths(map_get(planned_staged, "staged"), sample).len() != 0 { return "staged planned"; }
+    let dot_plan = #{ test_file: "./tests/a.py", production_files: [] };
+    if blocking_paths(["tests/a.py"], dot_plan).len() != 1 { return "alias dot slash"; }
+    let mid_plan = #{ test_file: "tests/./a.py", production_files: [] };
+    if blocking_paths(["tests/a.py"], mid_plan).len() != 1 { return "alias dot seg"; }
+    if staged_foreign_paths(["tests/a.py"], dot_plan).len() != 0 { return "alias staged"; }
+    let alias_row = dirty_entries([" M ./tests/a.py"]);
+    if map_bool(alias_row, "ok", false) != true { return "alias porcelain"; }
+    if as_array(map_get(alias_row, "paths"))[0] != "tests/a.py" { return "alias porcelain path"; }
+    if !bad_path("a\nb") { return "control newline"; }
+    if !bad_path("a\rb") { return "control cr"; }
+    if dirty_entries(["M  \"bad\\nname.py\""]).ok { return "quote newline"; }
+    if !keep_text(["a\nb"]).contains("\\n") { return "keep escape"; }
     let renamed = dirty_entries(["R  old.txt -> new.txt"]);
     if map_bool(renamed, "ok", false) != true { return "rename parse"; }
     let rename_paths = as_array(map_get(renamed, "paths"));
@@ -445,12 +496,12 @@ fn kept_paths(raw) {
 
 fn planned_paths(plan) {
     let out = [];
-    let test_file = map_str(plan, "test_file");
+    let test_file = canonical_rel_path(map_str(plan, "test_file"));
     if test_file != "" {
         out.push(test_file);
     }
     for item in as_array(map_get(plan, "production_files")) {
-        let p = trimmed(item);
+        let p = canonical_rel_path(trimmed(item));
         if p != "" && !list_has(out, p) {
             out.push(p);
         }
@@ -657,8 +708,10 @@ fn dirty_row(line) {
     if parts == () { return (); }
     let paths = [];
     for token in parts {
-        let path = decode_porcelain_path(token);
-        if path == () || bad_path(path) || list_has(paths, path) {
+        let decoded = decode_porcelain_path(token);
+        if decoded == () { return (); }
+        let path = canonical_rel_path(decoded);
+        if bad_path(path) || list_has(paths, path) {
             return ();
         }
         paths.push(path);
@@ -711,7 +764,7 @@ fn keep_text(paths) {
     let p = "These paths were already dirty. Do not stage, restore, or edit them:";
     for path in paths {
         p += "\n- ";
-        p += path;
+        p += json_encode(path);
     }
     p += "\nThe test file and production files are expected once this step changes them. Any other path in git status --porcelain --untracked-files=no means stop and set the proof flag false.\n";
     p
@@ -757,7 +810,7 @@ fn green_keep_text(plan, paths) {
         p += ".\nThese paths were already dirty. Do not stage, restore, or edit them:";
         for path in paths {
             p += "\n- ";
-            p += path;
+            p += json_encode(path);
         }
         p += "\n";
     }
