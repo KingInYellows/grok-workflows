@@ -305,7 +305,34 @@ fn self_check() {
     if blocking_paths([".github/workflows/deployable-image.yml"], sample).len() != 1 { return "dirty overlap"; }
     if !keep_text([".gitignore"]).contains(".gitignore") { return "keep text"; }
     if !dirty_prompt().contains("--untracked-files=no") { return "dirty status"; }
+    if !dirty_prompt().contains("two-character status") { return "dirty prefix"; }
     if !red_prompt(#{}, #{}, "agent/fix/EX-2", "main", [".gitignore"]).contains(".gitignore") { return "red keep"; }
+    if !red_prompt(#{}, #{}, "agent/fix/EX-2", "main", []).contains("is not empty before you edit") { return "red empty stop"; }
+    let unstaged = dirty_entries([" M .gitignore"]);
+    if map_bool(unstaged, "ok", false) != true { return "unstaged parse"; }
+    if as_array(map_get(unstaged, "paths")).len() != 1 { return "unstaged keep"; }
+    if as_array(map_get(unstaged, "staged")).len() != 0 { return "unstaged staged"; }
+    if blocking_paths(as_array(map_get(unstaged, "paths")), sample).len() != 0 { return "dirty unrelated porcelain"; }
+    let staged = dirty_entries(["M  .gitignore"]);
+    if map_bool(staged, "ok", false) != true { return "staged parse"; }
+    if staged_foreign_paths(map_get(staged, "staged"), sample).len() != 1 { return "staged foreign"; }
+    let planned_staged = dirty_entries(["M  tests/a.py"]);
+    if staged_foreign_paths(map_get(planned_staged, "staged"), sample).len() != 0 { return "staged planned"; }
+    let renamed = dirty_entries(["R  old.txt -> new.txt"]);
+    if map_bool(renamed, "ok", false) != true { return "rename parse"; }
+    if !list_has(as_array(map_get(renamed, "paths")), "new.txt") { return "rename dest"; }
+    if as_array(map_get(renamed, "staged")).len() != 1 { return "rename staged"; }
+    if dirty_entries([" M .gitignore", " M .gitignore"]).ok { return "dirty dup porcelain"; }
+    if dirty_entries([" M ../x"]).ok { return "dirty escape porcelain"; }
+    let green_empty = green_prompt(#{}, sample, "agent/fix/EX-2", []);
+    if !green_empty.contains("tests/a.py") { return "green test"; }
+    if !green_empty.contains("already be dirty") { return "green red file"; }
+    if green_empty.contains("is not empty before you edit") { return "green blocked red"; }
+    if !green_empty.contains("Any other tracked path") { return "green other"; }
+    if !green_empty.contains("index column") { return "green staged"; }
+    let green_kept = green_prompt(#{}, sample, "agent/fix/EX-2", [".gitignore"]);
+    if !green_kept.contains(".gitignore") { return "green keep"; }
+    if !green_kept.contains("Any other tracked path") { return "green keep other"; }
     ""
 }
 
@@ -398,6 +425,64 @@ fn blocking_paths(dirty_paths, plan) {
     blocking
 }
 
+fn path_after_rename(rest) {
+    let arrow = " -> ";
+    let n = rest.len();
+    let i = 0;
+    while i + 4 <= n {
+        if rest.sub_string(i, 4) == arrow {
+            return trimmed(rest.sub_string(i + 4, n - (i + 4)));
+        }
+        i += 1;
+    }
+    trimmed(rest)
+}
+
+fn dirty_row(line) {
+    if type_of(line) != "string" || trimmed(line) == "" || line.len() < 4 {
+        return ();
+    }
+    if line.sub_string(2, 1) != " " {
+        return ();
+    }
+    let path = path_after_rename(line.sub_string(3, line.len() - 3));
+    if bad_path(path) {
+        return ();
+    }
+    #{ path: path, staged: line.sub_string(0, 1) != " " }
+}
+
+fn dirty_entries(raw) {
+    let paths = [];
+    let staged = [];
+    for item in as_array(raw) {
+        let row = dirty_row(item);
+        if row == () {
+            return #{ ok: false, paths: [], staged: [] };
+        }
+        let path = map_str(row, "path");
+        if path == "" || list_has(paths, path) || paths.len() >= 32 {
+            return #{ ok: false, paths: [], staged: [] };
+        }
+        paths.push(path);
+        if map_bool(row, "staged", false) {
+            staged.push(path);
+        }
+    }
+    #{ ok: true, paths: paths, staged: staged }
+}
+
+fn staged_foreign_paths(staged, plan) {
+    let named = planned_paths(plan);
+    let out = [];
+    for path in as_array(staged) {
+        if !list_has(named, path) && !list_has(out, path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
 fn keep_text(paths) {
     if type_of(paths) != "array" || paths.len() == 0 {
         return "If git status --porcelain --untracked-files=no is not empty before you edit, stop and set the proof flag false.\n";
@@ -416,7 +501,7 @@ fn dirty_prompt() {
     p += guardrails_text();
     p += tools_exec();
     p += "Run git status --porcelain --untracked-files=no. When the output is empty, set clean true and paths to an empty array.\n";
-    p += "Otherwise set clean false. paths lists each repo-relative path, with the status prefix removed. Do not include untracked files. A rename contributes both paths. Leave paths empty when you cannot name every path.\n";
+    p += "Otherwise set clean false. paths lists each porcelain line exactly, including the two-character status and the space after it. Do not trim a leading space. Do not drop the status. Do not include untracked files. A rename stays one line. Leave paths empty when you cannot copy every line.\n";
     p
 }
 
@@ -443,11 +528,29 @@ fn red_prompt(issue, plan, branch_name, trunk, keep_paths) {
     p
 }
 
+fn green_keep_text(plan, paths) {
+    let p = "test_file may already be dirty from the red stage. That path is allowed";
+    if type_of(paths) != "array" || paths.len() == 0 {
+        p += " even when no other path was dirty at the start.\n";
+    } else {
+        p += ".\nThese paths were already dirty. Do not stage, restore, or edit them:";
+        for path in paths {
+            p += "\n- ";
+            p += path;
+        }
+        p += "\n";
+    }
+    p += "Any other tracked path in git status --porcelain --untracked-files=no means stop and set green_proven false.\n";
+    p += "Before gt modify --commit, run git status --porcelain --untracked-files=no again. ";
+    p += "If a path other than test_file and production_files has an index column other than a space, do not commit and set green_proven false. Leave unstaged paths unstaged.\n";
+    p
+}
+
 fn green_prompt(issue, plan, branch_name, keep_paths) {
     let p = "You make one failing test pass. Do not submit.\n";
     p += guardrails_text();
     p += tools_exec();
-    p += keep_text(keep_paths);
+    p += green_keep_text(plan, keep_paths);
     p += "Stay on branch_name. Edit only test_file and production_files. Do not delete the failing test.\n";
     p += "Run test_command exactly. Set green_proven true only when it exits 0. Put a short passing excerpt in pass_excerpt.\n";
     p += "When it fails, do not commit and set green_proven false.\n";
@@ -1008,12 +1111,12 @@ if dirty == () {
     notes.push(note_row("implement", "Could not read tracked changes. Nothing was edited."));
     finish(notes);
 }
-let kept = kept_paths(map_get(dirty, "paths"));
-if kept.ok != true {
+let entries = dirty_entries(map_get(dirty, "paths"));
+if map_bool(entries, "ok", false) != true {
     notes.push(note_row("implement", "Tracked changes were not a list of safe paths. Nothing was edited."));
     finish(notes);
 }
-let keep_paths = kept.paths;
+let keep_paths = as_array(map_get(entries, "paths"));
 if map_bool(dirty, "clean", false) {
     if keep_paths.len() != 0 {
         notes.push(note_row("implement", "Clean status listed paths. Nothing was edited."));
@@ -1032,6 +1135,18 @@ if map_bool(dirty, "clean", false) {
             why += ".";
         }
         why += " Commit or stash those paths, then run again.";
+        notes.push(note_row("implement", why));
+        finish(notes);
+    }
+    let staged_foreign = staged_foreign_paths(map_get(entries, "staged"), plan);
+    if staged_foreign.len() > 0 {
+        let why = "A non-planned path is already staged.";
+        for path in staged_foreign {
+            why += " ";
+            why += path;
+            why += ".";
+        }
+        why += " Unstage it, then run again.";
         notes.push(note_row("implement", why));
         finish(notes);
     }
