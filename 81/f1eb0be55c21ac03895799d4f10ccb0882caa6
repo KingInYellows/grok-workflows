@@ -1,0 +1,19 @@
+ship-next-issue.rhai
+  s_849aed0731fe4d::t_e616febe2242b9 308,310-335,428-485,504,531-548,553,1114-1115,1119,1141-1152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "81f1eb0be55c21ac03895799d4f10ccb0882caa6",
+  "prompts": {},
+  "sessions": {
+    "s_849aed0731fe4d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6477b586-8df1-49d1-addc-f61879aa0194",
+        "model": "unknown"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
