@@ -1,0 +1,14 @@
+linear-organize.rhai
+  h_6000354274ce50 213-220,223-225,227-228,247-253,1331-1334,1336,1338,1344-1354,1357-1361,1475,1533-1536,1566-1572
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eb6a7086142543fc5ac796455abdd130900cabed",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
