@@ -1,9 +1,9 @@
 let meta = #{
     name: "ship-next-issue",
     description: "Pick the next open issue in any git repo, implement it, review it, submit one Graphite PR, and take one bot-comment pass",
-    when_to_use: "Any git checkout. Picks the next completable open issue for the Linear team matching the origin repo name, or args.issue. Submits one Graphite PR unless args.submit is false. One bot-comment pass after submit, not a long-lived watcher. Never merges. Tracked changes that do not overlap the planned files stay unstaged. /ship-next-issue or /workflow ship-next-issue.",
+    when_to_use: "Any git checkout. Picks the next completable open issue for the Linear team matching the origin repo name, or args.issue. Current cycle first, then other open team issues. Drops epics, open blockers, and needs-owner unless args.issue names that issue. Submits one Graphite PR unless args.submit is false. One bot-comment pass after submit, not a long-lived watcher. Never merges. Tracked changes that do not overlap the planned files stay unstaged. /ship-next-issue or /workflow ship-next-issue.",
     phases: [
-        #{ title: "Select", detail: "rank one open issue" },
+        #{ title: "Select", detail: "page open issues, then rank" },
         #{ title: "Evaluate", detail: "reject work one PR cannot finish" },
         #{ title: "Context", detail: "read the code the issue names" },
         #{ title: "Plan", detail: "plan, then one skeptic" },
@@ -16,7 +16,8 @@ let meta = #{
     ],
 };
 
-const MAX_CANDIDATES = 12;
+// select_schema pool maxItems must stay equal to MAX_POOL.
+const MAX_POOL = 50;
 const MAX_FILES = 8;
 const MAX_FINDINGS = 4;
 const MAX_BOTS = 4;
@@ -270,7 +271,22 @@ fn blocker_open(row) {
     false
 }
 
+fn has_label(row, name) {
+    for label in as_array(map_get(row, "labels")) {
+        if trimmed(label) == name { return true; }
+    }
+    false
+}
+
+fn ready_rank(row) {
+    if has_label(row, "agent-ready") { return 0; }
+    1
+}
+
 fn better_issue(a, b) {
+    let ra = ready_rank(a);
+    let rb = ready_rank(b);
+    if ra != rb { return ra < rb; }
     let sa = status_rank(map_str(a, "status_type"));
     let sb = status_rank(map_str(b, "status_type"));
     if sa != sb { return sa < sb; }
@@ -278,6 +294,63 @@ fn better_issue(a, b) {
     let pb = priority_rank(map_int(b, "priority"));
     if pa != pb { return pa < pb; }
     map_str(a, "identifier") < map_str(b, "identifier")
+}
+
+fn drop_reason(row, only_issue) {
+    let id = map_str(row, "identifier");
+    if id == "" { return "missing id"; }
+    if status_rank(map_str(row, "status_type")) == 9 { return "closed"; }
+    if only_issue != "" && id == only_issue { return ""; }
+    if is_epic(row) { return "epic"; }
+    if blocker_open(row) { return "blocked"; }
+    if has_label(row, "needs-owner") { return "needs-owner"; }
+    ""
+}
+
+fn classify_pool(rows, only_issue, skip_ids) {
+    let eligible = [];
+    let drops = [];
+    for row in as_array(rows) {
+        if type_of(row) != "map" { continue; }
+        let id = map_str(row, "identifier");
+        if id == "" || list_has(skip_ids, id) { continue; }
+        if only_issue != "" && id != only_issue { continue; }
+        let reason = drop_reason(row, only_issue);
+        if reason != "" {
+            drops.push(#{ identifier: id, reason: reason });
+        } else {
+            eligible.push(row);
+        }
+    }
+    #{ eligible: eligible, drops: drops }
+}
+
+fn drop_text(drops) {
+    let text = "";
+    let n = 0;
+    let total = as_array(drops).len();
+    for item in as_array(drops) {
+        if n < 12 {
+            if n > 0 { text += ", "; }
+            text += map_str(item, "identifier");
+            text += " ";
+            text += map_str(item, "reason");
+            n += 1;
+        }
+    }
+    if total > 12 { text += " ..."; }
+    if text == "" { return "none"; }
+    text
+}
+
+fn census_line(open_n, eligible_n, drops) {
+    let text = "open ";
+    text += open_n.to_string();
+    text += ", eligible ";
+    text += eligible_n.to_string();
+    text += ", dropped ";
+    text += drop_text(drops);
+    text
 }
 
 fn pick_issue(rows, only_issue, skip_ids) {
@@ -289,7 +362,7 @@ fn pick_issue(rows, only_issue, skip_ids) {
         if status_rank(map_str(row, "status_type")) == 9 { continue; }
         if only_issue != "" {
             if id != only_issue { continue; }
-        } else if is_epic(row) || blocker_open(row) {
+        } else if drop_reason(row, "") != "" {
             continue;
         }
         if best == () || better_issue(row, best) { best = row; }
@@ -333,13 +406,34 @@ fn self_check() {
         status_type: "started", labels: [],
         blocked_by: [#{ identifier: "EX-8", status_type: "started" }],
     };
-    let rows = [epic, blocked, urgent, started];
+    let owner = #{
+        identifier: "EX-4", title: "Owner rehearsal", priority: 1,
+        status_type: "started", labels: ["needs-owner"], blocked_by: [],
+    };
+    let ready = #{
+        identifier: "EX-5", title: "Ready bug", priority: 4,
+        status_type: "unstarted", labels: ["agent-ready"], blocked_by: [],
+    };
+    let rows = [epic, blocked, owner, urgent, started, ready];
     let chosen = pick_issue(rows, "", []);
-    if map_str(chosen, "identifier") != "EX-2" { return "rank started"; }
+    if map_str(chosen, "identifier") != "EX-5" { return "rank agent-ready"; }
+    let started_first = pick_issue([urgent, started], "", []);
+    if map_str(started_first, "identifier") != "EX-2" { return "rank started"; }
     let named = pick_issue(rows, "EX-1", []);
     if map_str(named, "identifier") != "EX-1" { return "named issue"; }
-    let skipped = pick_issue(rows, "", ["EX-2"]);
+    let named_owner = pick_issue([owner], "EX-4", []);
+    if map_str(named_owner, "identifier") != "EX-4" { return "named owner"; }
+    let skipped = pick_issue([urgent, started], "", ["EX-2"]);
     if map_str(skipped, "identifier") != "EX-1" { return "skip used"; }
+    if drop_reason(owner, "") != "needs-owner" { return "owner drop"; }
+    if drop_reason(owner, "EX-4") != "" { return "named owner kept"; }
+    if drop_reason(epic, "") != "epic" { return "epic drop"; }
+    if drop_reason(blocked, "") != "blocked" { return "blocked drop"; }
+    if drop_reason(started, "") != "" { return "open kept"; }
+    let classified = classify_pool(rows, "", []);
+    if classified.eligible.len() != 3 { return "classify eligible"; }
+    if classified.drops.len() != 3 { return "classify drops"; }
+    if drop_text(classified.drops) == "none" { return "drop text"; }
     if branch_for("EX-2") != "agent/fix/EX-2" { return "branch"; }
     if safe_branch("agent/fix/EX-2") != true { return "safe branch"; }
     if clean_paths(["../x", "src/a.ts", "src/a.ts"], 8).paths.len() != 1 { return "paths"; }
@@ -576,17 +670,26 @@ fn self_check() {
     ""
 }
 
-fn select_prompt(only_issue, team_override) {
+fn select_prompt(only_issue, team_override, pool_cap) {
     let p = "You list open issues for the repository you are in. Do not edit, commit, or submit.\n";
     p += guardrails_text();
     p += tools_exec();
     p += "Steps:\n";
     p += "1. Run git remote get-url origin. The repo name is the last path segment with .git removed. Run git symbolic-ref --short refs/remotes/origin/HEAD and take the branch name after origin/ as trunk. When that ref is missing, use main if origin/main exists, otherwise master. Set head_behind from git rev-list --count HEAD..origin/TRUNK. On failure set head_behind to -1.\n";
-    p += "2. Call linear__list_teams. When team_override is non-empty, match that team name or key. Otherwise match the team whose name or key equals the repo name, ignoring ASCII case. Set team_match_count. When it is not 1, set ok false and return no candidates.\n";
-    p += "3. When only_issue is non-empty, fetch that one issue with linear__get_issue or linear__list_issues. Do not require it to be in the current cycle. Set cycle_ok true.\n";
-    p += "4. Otherwise call linear__list_cycles with the team id from list_teams and type current. The cycle list rejects a team name. When there is no current cycle, set ok false and cycle_ok false. List open issues in that cycle. Open means statusType backlog, unstarted, or started. Return at most 12. Do not call get_issue for every row.\n";
-    p += "5. Each candidate needs identifier, url, title, priority, status_type, labels, and blocked_by. blocked_by entries need identifier and status_type. Leave blocked_by empty when the list payload has no relations. labels is an array of name strings.\n";
-    p += "6. Set ok true only when trunk is non-empty and team_match_count is 1. Put the failure in error.\n";
+    p += "2. Call linear__list_teams. When team_override is non-empty, match that team name or key. Otherwise match the team whose name or key equals the repo name, ignoring ASCII case. Set team_match_count. When it is not 1, set ok false and return empty cycle_candidates and fallback_candidates.\n";
+    p += "3. When only_issue is non-empty, fetch that one issue with linear__get_issue or linear__list_issues. Do not require it to be in the current cycle. Put it in cycle_candidates. Leave fallback_candidates empty. Set cycle_ok true, cycle_truncated false, and fallback_truncated false. Skip steps 4 through 6.\n";
+    p += "4. Otherwise call linear__list_cycles with the team id from list_teams and type current. The cycle list rejects a team name. When there is no current cycle, set cycle_ok false, leave cycle_candidates empty, and set cycle_truncated false. Do not set ok false only because the cycle is missing.\n";
+    p += "5. When a current cycle exists, fill cycle_candidates by calling linear__list_issues three times, with state started, then unstarted, then backlog. Pass the team and that cycle. Pass limit ";
+    p += pool_cap.to_string();
+    p += ". When hasNextPage is true, call again with cursor. Stop when cycle_candidates has ";
+    p += pool_cap.to_string();
+    p += " issues. Set cycle_truncated true if any call still has hasNextPage, or if the pool reached the cap before started, unstarted, and backlog were all read. Otherwise set cycle_truncated false. Set cycle_ok true when the current cycle was read.\n";
+    p += "6. Then fill fallback_candidates with the same three state calls and the same paging, for the team, with no cycle argument. Remove any identifier already in cycle_candidates. Stop at ";
+    p += pool_cap.to_string();
+    p += " issues. Set fallback_truncated true if any call still has hasNextPage, or if the pool reached the cap before started, unstarted, and backlog were all read. Otherwise set fallback_truncated false.\n";
+    p += "7. Open means status type started, unstarted, or backlog. Keep needs-owner, epics, and blocked issues in the arrays. The script drops them. Do not call get_issue for every row. Do not sort.\n";
+    p += "8. Each issue needs identifier, url, title, priority, status_type, labels, and blocked_by. priority is the integer value. blocked_by entries need identifier and status_type. Leave blocked_by empty when the list payload has no relations. labels is an array of name strings.\n";
+    p += "9. Set ok true only when trunk is non-empty and team_match_count is 1. Put the failure in error.\n";
     p += packet_line(#{ only_issue: only_issue, team_override: team_override });
     p
 }
@@ -1440,47 +1543,56 @@ fn report_text(rows) {
     text
 }
 
+let issue_row_schema = #{
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["identifier", "url", "title", "priority", "status_type", "labels", "blocked_by"],
+    "properties": #{
+        "identifier": #{ "type": "string" },
+        "url": #{ "type": "string" },
+        "title": #{ "type": "string" },
+        "priority": #{ "type": "integer" },
+        "status_type": #{ "type": "string" },
+        "labels": #{ "type": "array", "maxItems": 12, "items": #{ "type": "string" } },
+        "blocked_by": #{
+            "type": "array",
+            "maxItems": 8,
+            "items": #{
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["identifier", "status_type"],
+                "properties": #{
+                    "identifier": #{ "type": "string" },
+                    "status_type": #{ "type": "string" },
+                },
+            },
+        },
+    },
+};
+
 let select_schema = #{
     "type": "object",
     "additionalProperties": false,
-    "required": ["ok", "error", "team_match_count", "cycle_ok", "trunk", "head_behind", "candidates"],
+    "required": ["ok", "error", "team_match_count", "cycle_ok", "cycle_truncated", "fallback_truncated", "trunk", "head_behind", "cycle_candidates", "fallback_candidates"],
     "properties": #{
         "ok": #{ "type": "boolean" },
         "error": #{ "type": "string" },
         "team_match_count": #{ "type": "integer" },
         "repo_name": #{ "type": "string" },
         "cycle_ok": #{ "type": "boolean" },
+        "cycle_truncated": #{ "type": "boolean" },
+        "fallback_truncated": #{ "type": "boolean" },
         "trunk": #{ "type": "string" },
         "head_behind": #{ "type": "integer" },
-        "candidates": #{
+        "cycle_candidates": #{
             "type": "array",
-            "maxItems": 12,
-            "items": #{
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["identifier", "url", "title", "priority", "status_type", "labels", "blocked_by"],
-                "properties": #{
-                    "identifier": #{ "type": "string" },
-                    "url": #{ "type": "string" },
-                    "title": #{ "type": "string" },
-                    "priority": #{ "type": "integer" },
-                    "status_type": #{ "type": "string" },
-                    "labels": #{ "type": "array", "maxItems": 12, "items": #{ "type": "string" } },
-                    "blocked_by": #{
-                        "type": "array",
-                        "maxItems": 8,
-                        "items": #{
-                            "type": "object",
-                            "additionalProperties": false,
-                            "required": ["identifier", "status_type"],
-                            "properties": #{
-                                "identifier": #{ "type": "string" },
-                                "status_type": #{ "type": "string" },
-                            },
-                        },
-                    },
-                },
-            },
+            "maxItems": 50,
+            "items": issue_row_schema,
+        },
+        "fallback_candidates": #{
+            "type": "array",
+            "maxItems": 50,
+            "items": issue_row_schema,
         },
     },
 };
@@ -1684,6 +1796,10 @@ let check = self_check();
 if check != "" {
     pause("verification", check);
 }
+let schema_text = json_encode(select_schema);
+if !schema_text.contains("cycle_candidates") || !schema_text.contains("fallback_candidates") || !schema_text.contains("blocked_by") {
+    pause("verification", "select schema did not encode both pools");
+}
 
 let only_issue = "";
 let team_override = "";
@@ -1698,7 +1814,7 @@ if args != () {
 
 phase("Select");
 let select_r = agent(
-    select_prompt(only_issue, team_override),
+    select_prompt(only_issue, team_override, MAX_POOL),
     #{ label: "select", capability_mode: "all", output_schema: select_schema }
 );
 let selected = agent_map(select_r);
@@ -1729,10 +1845,53 @@ let ready_evidence = "";
 let context_summary = "";
 let plan = ();
 let tries = 0;
+let cycle_rows = map_get(selected, "cycle_candidates");
+let fallback_rows = map_get(selected, "fallback_candidates");
+let cycle_truncated = map_bool(selected, "cycle_truncated", false);
+let fallback_truncated = map_bool(selected, "fallback_truncated", false);
+let cycle_class = classify_pool(cycle_rows, only_issue, skip_ids);
+let cycle_open = as_array(cycle_rows).len();
+let cycle_eligible_n = cycle_class.eligible.len();
+let cycle_drops = cycle_class.drops;
+let fallback_open = as_array(fallback_rows).len();
+let fallback_drops = [];
+let fallback_eligible_n = 0;
+let searched_fallback = false;
+let pool_name = "cycle";
+let active = cycle_class.eligible;
+for item in cycle_drops {
+    let id = map_str(item, "identifier");
+    let reason = map_str(item, "reason");
+    log(id + " skipped: " + reason);
+    notes.push(note_row("skip", id + " " + reason));
+    skip_ids.push(id);
+}
 while tries < MAX_TRIES && plan == () {
-    let candidate = pick_issue(map_get(selected, "candidates"), only_issue, skip_ids);
+    let candidate = pick_issue(active, only_issue, skip_ids);
     if candidate == () {
-        tries = MAX_TRIES;
+        let moved = false;
+        if pool_name == "cycle" && only_issue == "" && !cycle_truncated {
+            let fallback_class = classify_pool(fallback_rows, "", skip_ids);
+            fallback_drops = fallback_class.drops;
+            fallback_eligible_n = fallback_class.eligible.len();
+            for item in fallback_drops {
+                let id = map_str(item, "identifier");
+                let reason = map_str(item, "reason");
+                log(id + " skipped: " + reason);
+                notes.push(note_row("skip", id + " " + reason));
+                skip_ids.push(id);
+            }
+            active = fallback_class.eligible;
+            searched_fallback = true;
+            pool_name = "fallback";
+            log("cycle pool exhausted; searching the rest of the team");
+            moved = true;
+        }
+        if !moved || pick_issue(active, only_issue, skip_ids) == () {
+            tries = MAX_TRIES;
+        } else {
+            tries = -1;
+        }
     } else {
         let candidate_id = map_str(candidate, "identifier");
         phase("Evaluate");
@@ -1833,7 +1992,25 @@ while tries < MAX_TRIES && plan == () {
 }
 
 if chosen == () || plan == () {
-    notes.push(note_row("select", "No completable open issue. Pass args.issue to name one."));
+    let more_in_pool = pick_issue(active, only_issue, skip_ids) != ();
+    let detail = "";
+    if only_issue != "" {
+        detail = "Requested " + only_issue + ". ";
+    }
+    if more_in_pool {
+        detail += "Stopped after " + MAX_TRIES.to_string() + " evaluated issues with candidates still unread in the " + pool_name + " pool. Name an issue to continue. ";
+    } else if cycle_truncated && !searched_fallback {
+        detail += "Candidate list was truncated before every current-cycle issue was read. Fallback was not searched. Name an issue or raise the cap. ";
+    } else if searched_fallback && fallback_truncated {
+        detail += "Candidate list was truncated before every team issue was read. Name an issue or raise the cap. ";
+    } else {
+        detail += "No completable open issue. Pass args.issue to name one. ";
+    }
+    detail += "Cycle " + census_line(cycle_open, cycle_eligible_n, cycle_drops) + ".";
+    if searched_fallback {
+        detail += " Fallback " + census_line(fallback_open, fallback_eligible_n, fallback_drops) + ".";
+    }
+    notes.push(#{ label: "select", detail: clip(detail, 900) });
     finish(notes);
 }
 
