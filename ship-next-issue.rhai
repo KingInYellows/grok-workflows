@@ -179,6 +179,9 @@ fn canonical_rel_path(path) {
     let p = trimmed(path);
     while p.len() >= 2 && p.sub_string(0, 2) == "./" {
         p = p.sub_string(2, p.len() - 2);
+        while p.len() > 0 && p.sub_string(0, 1) == "/" {
+            p = p.sub_string(1, p.len() - 1);
+        }
     }
     let out = "";
     let i = 0;
@@ -194,7 +197,12 @@ fn canonical_rel_path(path) {
             i += 2;
             continue;
         }
-        out += p.sub_string(i, 1);
+        let cur = p.sub_string(i, 1);
+        if cur == "/" && out.len() > 0 && out.sub_string(out.len() - 1, 1) == "/" {
+            i += 1;
+            continue;
+        }
+        out += cur;
         i += 1;
     }
     out
@@ -362,6 +370,17 @@ fn self_check() {
     let mid_plan = #{ test_file: "tests/./a.py", production_files: [] };
     if blocking_paths(["tests/a.py"], mid_plan).len() != 1 { return "alias dot seg"; }
     if staged_foreign_paths(["tests/a.py"], dot_plan).len() != 0 { return "alias staged"; }
+    let slash_plan = #{ test_file: "tests//a.py", production_files: ["tests///b.py"] };
+    if blocking_paths(["tests/a.py"], slash_plan).len() != 1 { return "alias slash"; }
+    if blocking_paths(["tests/b.py"], slash_plan).len() != 1 { return "alias slash many"; }
+    if staged_foreign_paths(["tests/a.py"], slash_plan).len() != 0 { return "alias slash staged"; }
+    if canonical_rel_path("tests//./a.py") != "tests/a.py" { return "alias slash dot"; }
+    if canonical_rel_path(".//tests/a.py") != "tests/a.py" { return "alias dot slash slash"; }
+    if canonical_rel_path(".///a.py") != "a.py" { return "alias dot slash many"; }
+    let dot_slash_plan = #{ test_file: ".//tests/a.py", production_files: [] };
+    if blocking_paths(["tests/a.py"], dot_slash_plan).len() != 1 { return "alias dot slash block"; }
+    if !bad_path(canonical_rel_path("/tests/a.py")) { return "alias absolute"; }
+    if !bad_path(canonical_rel_path("//tests/a.py")) { return "alias absolute slash"; }
     let alias_row = dirty_entries([" M ./tests/a.py"]);
     if map_bool(alias_row, "ok", false) != true { return "alias porcelain"; }
     if as_array(map_get(alias_row, "paths"))[0] != "tests/a.py" { return "alias porcelain path"; }
@@ -410,6 +429,14 @@ fn self_check() {
     if map_bool(cafe, "ok", false) != true { return "quote cafe"; }
     let cafe_plan = #{ test_file: "caf\u00e9.py", production_files: [] };
     if blocking_paths(as_array(map_get(cafe, "paths")), cafe_plan).len() != 1 { return "quote cafe block"; }
+    let raw_cafe = dirty_entries(["M  \"caf\u00e9 x.py\""]);
+    if map_bool(raw_cafe, "ok", false) != true { return "quote raw cafe"; }
+    if as_array(map_get(raw_cafe, "paths"))[0] != "caf\u00e9 x.py" { return "quote raw cafe path"; }
+    let raw_cafe_plan = #{ test_file: "caf\u00e9 x.py", production_files: [] };
+    if blocking_paths(as_array(map_get(raw_cafe, "paths")), raw_cafe_plan).len() != 1 { return "quote raw cafe block"; }
+    let raw_euro = dirty_entries(["M  \"\u20ac x.py\""]);
+    if map_bool(raw_euro, "ok", false) != true { return "quote raw euro"; }
+    if as_array(map_get(raw_euro, "paths"))[0] != "\u20ac x.py" { return "quote raw euro path"; }
     let euro = dirty_entries(["M  \"\\342\\202\\254.py\""]);
     if map_bool(euro, "ok", false) != true { return "quote euro"; }
     if as_array(map_get(euro, "paths"))[0] != "\u20ac.py" { return "quote euro path"; }
@@ -428,6 +455,47 @@ fn self_check() {
     let green_kept = green_prompt(#{}, sample, "agent/fix/EX-2", [".gitignore"]);
     if !green_kept.contains(".gitignore") { return "green keep"; }
     if !green_kept.contains("Any other tracked path") { return "green keep other"; }
+    let keep_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let other_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let keep_list = [".gitignore"];
+    let keep_works = [#{ path: ".gitignore", work: keep_hash }];
+    let keep_same = #{
+        paths: [" M .gitignore"],
+        works: [#{ path: ".gitignore", work: keep_hash }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_same) != "" { return "keep same"; }
+    let keep_restored = #{
+        paths: [],
+        works: [#{ path: ".gitignore", work: keep_hash }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_restored) != "restored" { return "keep restored"; }
+    let keep_staged = #{
+        paths: ["M  .gitignore"],
+        works: [#{ path: ".gitignore", work: keep_hash }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_staged) != "staged" { return "keep staged"; }
+    let keep_rewritten = #{
+        paths: [" M .gitignore"],
+        works: [#{ path: ".gitignore", work: other_hash }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_rewritten) != "rewritten" { return "keep rewritten"; }
+    let keep_dropped = #{
+        paths: [" M other.txt"],
+        works: [#{ path: "other.txt", work: keep_hash }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_dropped) != "restored" { return "keep dropped"; }
+    if keep_drift([], [], keep_works, keep_restored) != "" { return "keep empty"; }
+    let keep_bad = #{
+        paths: [" M .gitignore"],
+        works: [#{ path: ".gitignore", work: "nope" }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_bad) != "unreadable" { return "keep bad hash"; }
+    let keep_absent = #{
+        paths: [" D .gitignore"],
+        works: [#{ path: ".gitignore", work: "absent" }],
+    };
+    let absent_works = [#{ path: ".gitignore", work: "absent" }];
+    if keep_drift(keep_list, [], absent_works, keep_absent) != "" { return "keep absent"; }
     ""
 }
 
@@ -596,6 +664,23 @@ fn utf8_ok(bytes) {
     true
 }
 
+fn utf8_bytes(code) {
+    if code < 128 || code > 1114111 { return (); }
+    if code >= 55296 && code <= 57343 { return (); }
+    if code < 2048 {
+        return [192 + (code / 64), 128 + (code % 64)];
+    }
+    if code < 65536 {
+        return [224 + (code / 4096), 128 + ((code / 64) % 64), 128 + (code % 64)];
+    }
+    [
+        240 + (code / 262144),
+        128 + ((code / 4096) % 64),
+        128 + ((code / 64) % 64),
+        128 + (code % 64),
+    ]
+}
+
 // as_string turns invalid UTF-8 into U+FFFD and does not throw.
 fn bytes_to_text(bytes) {
     if !utf8_ok(bytes) { return (); }
@@ -656,8 +741,18 @@ fn decode_porcelain_path(token) {
         }
         if ch == "\"" { return (); }
         let byte = ascii_byte(ch);
-        if byte < 0 { return (); }
-        bytes.push(byte);
+        if byte >= 0 {
+            bytes.push(byte);
+            i += 1;
+            continue;
+        }
+        if ch == "" { return (); }
+        let code = ch[0].to_int();
+        let extra = utf8_bytes(code);
+        if extra == () { return (); }
+        for extra_byte in extra {
+            bytes.push(extra_byte);
+        }
         i += 1;
     }
     bytes_to_text(bytes)
@@ -746,6 +841,68 @@ fn dirty_entries(raw) {
     #{ ok: true, paths: paths, staged: staged }
 }
 
+fn hex_work(token) {
+    if token == "absent" { return true; }
+    let n = token.len();
+    if n != 40 && n != 64 { return false; }
+    let hex = "0123456789abcdef";
+    let i = 0;
+    while i < n {
+        if !hex.contains(token.sub_string(i, 1)) { return false; }
+        i += 1;
+    }
+    true
+}
+
+fn work_for(works, path) {
+    if type_of(works) != "array" { return ""; }
+    for item in works {
+        if type_of(item) != "map" { continue; }
+        if map_str(item, "path") == path { return map_str(item, "work"); }
+    }
+    ""
+}
+
+fn work_rows(raw) {
+    let out = [];
+    for item in as_array(raw) {
+        if type_of(item) != "map" { return (); }
+        let path = canonical_rel_path(map_str(item, "path"));
+        let work = map_str(item, "work");
+        if bad_path(path) || !hex_work(work) || work_for(out, path) != "" { return (); }
+        out.push(#{ path: path, work: work });
+    }
+    out
+}
+
+fn keep_drift(keep_paths, before_staged, before_works, after_raw) {
+    if type_of(keep_paths) != "array" || keep_paths.len() == 0 { return ""; }
+    if before_works == () || type_of(before_works) != "array" { return "unreadable"; }
+    if after_raw == () || type_of(after_raw) != "map" { return "unreadable"; }
+    let after_entries = dirty_entries(map_get(after_raw, "paths"));
+    if map_bool(after_entries, "ok", false) != true { return "unreadable"; }
+    let after_works = work_rows(map_get(after_raw, "works"));
+    if after_works == () { return "unreadable"; }
+    let after_paths = as_array(map_get(after_entries, "paths"));
+    let after_staged = as_array(map_get(after_entries, "staged"));
+    for path in keep_paths {
+        if !list_has(after_paths, path) { return "restored"; }
+        if list_has(before_staged, path) != list_has(after_staged, path) { return "staged"; }
+        let before = work_for(before_works, path);
+        let after = work_for(after_works, path);
+        if before == "" || after == "" || before != after { return "rewritten"; }
+    }
+    ""
+}
+
+fn keep_note(code) {
+    if code == "" { return ""; }
+    if code == "restored" { return "A kept path was restored or dropped."; }
+    if code == "staged" { return "A kept path was staged."; }
+    if code == "rewritten" { return "A kept path was rewritten."; }
+    "Could not recheck kept paths."
+}
+
 fn staged_foreign_paths(staged, plan) {
     let named = planned_paths(plan);
     let out = [];
@@ -767,6 +924,7 @@ fn keep_text(paths) {
         p += json_encode(path);
     }
     p += "\nThe test file and production files are expected once this step changes them. Any other path in git status --porcelain --untracked-files=no means stop and set the proof flag false.\n";
+    p += "The script stores each of these paths' index column and worktree hash. It stops when a later step restores, rewrites, stages, or drops one.\n";
     p
 }
 
@@ -776,7 +934,28 @@ fn dirty_prompt() {
     p += tools_exec();
     p += "Run git status --porcelain --untracked-files=no. When the output is empty, set clean true and paths to an empty array.\n";
     p += "Otherwise set clean false. paths lists each porcelain line exactly, including the two-character status and the space after it. Do not trim a leading space. Do not drop the status. Do not include untracked files. A rename stays one line. Leave paths empty when you cannot copy every line.\n";
+    p += "works has one object per tracked path. path is the repo-relative path. work is the lowercase hex from git hash-object -- path. When that path is not a worktree file, set work to absent. When clean is true, works is empty.\n";
     p
+}
+
+fn keep_check_prompt(keep_paths) {
+    let p = "You recheck kept paths. Do not edit, stage, restore, commit, or submit.\n";
+    p += guardrails_text();
+    p += tools_exec();
+    p += "Run git status --porcelain --untracked-files=no. Set clean true only when that output is empty. Otherwise set clean false.\n";
+    p += "paths lists each porcelain line exactly, including the two-character status and the space after it. Do not trim a leading space. Do not drop the status. A rename stays one line.\n";
+    p += "works has one object per path in the packet. path is that repo-relative path. work is the lowercase hex from git hash-object -- path. When that command fails because the path is not a worktree file, set work to absent. Do not hash any other path.\n";
+    p += packet_line(#{ keep_paths: keep_paths });
+    p
+}
+
+fn keep_guard(step, keep_paths, before_staged, before_works, schema) {
+    if type_of(keep_paths) != "array" || keep_paths.len() == 0 { return ""; }
+    let guard_r = agent(
+        keep_check_prompt(keep_paths),
+        #{ label: "keep-" + step, capability_mode: "execute", output_schema: schema }
+    );
+    keep_note(keep_drift(keep_paths, before_staged, before_works, agent_map(guard_r)))
 }
 
 fn red_prompt(issue, plan, branch_name, trunk, keep_paths) {
@@ -815,6 +994,7 @@ fn green_keep_text(plan, paths) {
         p += "\n";
     }
     p += "Any other tracked path in git status --porcelain --untracked-files=no means stop and set green_proven false.\n";
+    p += "The script stores each kept path's index column and worktree hash. It stops when this step restores, rewrites, stages, or drops one.\n";
     p += "Before gt modify --commit, run git status --porcelain --untracked-files=no again. ";
     p += "If a path other than test_file and production_files has an index column other than a space, do not commit and set green_proven false. Leave unstaged paths unstaged.\n";
     p
@@ -1092,10 +1272,23 @@ let verdict_schema = #{
 let dirty_schema = #{
     "type": "object",
     "additionalProperties": false,
-    "required": ["clean", "paths"],
+    "required": ["clean", "paths", "works"],
     "properties": #{
         "clean": #{ "type": "boolean" },
         "paths": #{ "type": "array", "maxItems": 32, "items": #{ "type": "string" } },
+        "works": #{
+            "type": "array",
+            "maxItems": 32,
+            "items": #{
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "work"],
+                "properties": #{
+                    "path": #{ "type": "string" },
+                    "work": #{ "type": "string" },
+                },
+            },
+        },
     },
 };
 
@@ -1432,11 +1625,24 @@ if map_bool(dirty, "clean", false) {
     }
     notes.push(note_row("implement", ignored));
 }
+let before_works = [];
+if keep_paths.len() != 0 {
+    before_works = work_rows(map_get(dirty, "works"));
+    if before_works == () || keep_drift(keep_paths, map_get(entries, "staged"), before_works, dirty) != "" {
+        notes.push(note_row("implement", "Kept paths had no worktree snapshot. Nothing was edited."));
+        finish(notes);
+    }
+}
 let red_r = agent(
     red_prompt(chosen, plan, branch_name, trunk, keep_paths),
     #{ label: "red", capability_mode: "all", output_schema: red_schema }
 );
 let red = agent_map(red_r);
+let red_keep = keep_guard("red", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
+if red_keep != "" {
+    notes.push(note_row("implement", red_keep));
+    finish(notes);
+}
 if red == () || !map_bool(red, "red_proven", false) {
     notes.push(note_row("implement", "The new test did not fail for the missing behavior."));
     finish(notes);
@@ -1446,6 +1652,11 @@ let green_r = agent(
     #{ label: "green", capability_mode: "all", output_schema: green_schema }
 );
 let green = agent_map(green_r);
+let green_keep = keep_guard("green", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
+if green_keep != "" {
+    notes.push(note_row("implement", green_keep));
+    finish(notes);
+}
 if green == () || !map_bool(green, "green_proven", false) {
     notes.push(note_row("implement", "The test did not pass. Nothing was submitted."));
     finish(notes);
@@ -1532,6 +1743,11 @@ if confirmed.len() > 0 {
         #{ label: "repair", capability_mode: "all", output_schema: green_schema }
     );
     let repair = agent_map(repair_r);
+    let repair_keep = keep_guard("repair", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
+    if repair_keep != "" {
+        notes.push(note_row("fix", repair_keep));
+        finish(notes);
+    }
     if repair == () || !map_bool(repair, "green_proven", false) {
         notes.push(note_row("fix", "Accepted findings were not fixed to a passing test. Not submitted."));
         finish(notes);
@@ -1628,6 +1844,11 @@ if fixes.len() > 0 {
         #{ label: "bot-fix", capability_mode: "all", output_schema: green_schema }
     );
     let fix_out = agent_map(fix_r);
+    let bot_keep = keep_guard("bot", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
+    if bot_keep != "" {
+        notes.push(note_row("bots", bot_keep));
+        finish(notes);
+    }
     if fix_out != () && map_bool(fix_out, "green_proven", false) {
         let pub_r = agent(
             bot_publish_prompt(chosen, branch_name, resolve_ids),
