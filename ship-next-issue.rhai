@@ -320,8 +320,52 @@ fn self_check() {
     if staged_foreign_paths(map_get(planned_staged, "staged"), sample).len() != 0 { return "staged planned"; }
     let renamed = dirty_entries(["R  old.txt -> new.txt"]);
     if map_bool(renamed, "ok", false) != true { return "rename parse"; }
-    if !list_has(as_array(map_get(renamed, "paths")), "new.txt") { return "rename dest"; }
-    if as_array(map_get(renamed, "staged")).len() != 1 { return "rename staged"; }
+    let rename_paths = as_array(map_get(renamed, "paths"));
+    if rename_paths.len() != 2 { return "rename paths"; }
+    if rename_paths[0] != "old.txt" { return "rename source"; }
+    if rename_paths[1] != "new.txt" { return "rename dest"; }
+    let rename_staged = as_array(map_get(renamed, "staged"));
+    if rename_staged.len() != 2 { return "rename staged"; }
+    if rename_staged[0] != "old.txt" || rename_staged[1] != "new.txt" { return "rename staged names"; }
+    if staged_foreign_paths(rename_staged, sample).len() != 2 { return "rename foreign"; }
+    let old_plan = #{ test_file: "old.txt", production_files: [] };
+    let old_overlap = blocking_paths(rename_paths, old_plan);
+    if old_overlap.len() != 1 || old_overlap[0] != "old.txt" { return "rename overlap"; }
+    let unstaged_rename = dirty_entries([" R old.txt -> new.txt"]);
+    if map_bool(unstaged_rename, "ok", false) != true { return "rename unstaged parse"; }
+    if as_array(map_get(unstaged_rename, "paths")).len() != 2 { return "rename unstaged paths"; }
+    if as_array(map_get(unstaged_rename, "staged")).len() != 0 { return "rename unstaged"; }
+    let quoted_rename = dirty_entries(["R  \"old name.txt\" -> \"new name.txt\""]);
+    if map_bool(quoted_rename, "ok", false) != true { return "quote rename"; }
+    let quoted_rename_paths = as_array(map_get(quoted_rename, "paths"));
+    if quoted_rename_paths.len() != 2 { return "quote rename paths"; }
+    if quoted_rename_paths[0] != "old name.txt" || quoted_rename_paths[1] != "new name.txt" { return "quote rename names"; }
+    if as_array(map_get(quoted_rename, "staged")).len() != 2 { return "quote rename staged"; }
+    let spaced = dirty_entries(["M  \"tests/a b.py\""]);
+    if map_bool(spaced, "ok", false) != true { return "quote space"; }
+    let space_plan = #{ test_file: "tests/a b.py", production_files: [] };
+    let space_overlap = blocking_paths(as_array(map_get(spaced, "paths")), space_plan);
+    if space_overlap.len() != 1 || space_overlap[0] != "tests/a b.py" { return "quote space block"; }
+    let kept_quote = dirty_entries([" M \"notes/a b.md\""]);
+    if map_bool(kept_quote, "ok", false) != true { return "quote keep"; }
+    if as_array(map_get(kept_quote, "paths"))[0] != "notes/a b.md" { return "quote keep path"; }
+    if as_array(map_get(kept_quote, "staged")).len() != 0 { return "quote keep staged"; }
+    if blocking_paths(as_array(map_get(kept_quote, "paths")), sample).len() != 0 { return "quote keep overlap"; }
+    let quoted_arrow = dirty_entries(["M  \"a -> b.txt\""]);
+    if map_bool(quoted_arrow, "ok", false) != true { return "quote arrow"; }
+    let arrow_paths = as_array(map_get(quoted_arrow, "paths"));
+    if arrow_paths.len() != 1 || arrow_paths[0] != "a -> b.txt" { return "quote arrow path"; }
+    let cafe = dirty_entries(["M  \"caf\\303\\251.py\""]);
+    if map_bool(cafe, "ok", false) != true { return "quote cafe"; }
+    let cafe_plan = #{ test_file: "caf\u00e9.py", production_files: [] };
+    if blocking_paths(as_array(map_get(cafe, "paths")), cafe_plan).len() != 1 { return "quote cafe block"; }
+    let euro = dirty_entries(["M  \"\\342\\202\\254.py\""]);
+    if map_bool(euro, "ok", false) != true { return "quote euro"; }
+    if as_array(map_get(euro, "paths"))[0] != "\u20ac.py" { return "quote euro path"; }
+    if dirty_entries(["M  \"unterminated"]).ok { return "quote open"; }
+    if dirty_entries(["M  \"bad\\q\""]).ok { return "quote escape"; }
+    if dirty_entries(["M  \"ok\" x"]).ok { return "quote junk"; }
+    if dirty_entries(["M  \"\\377\""]).ok { return "quote utf8"; }
     if dirty_entries([" M .gitignore", " M .gitignore"]).ok { return "dirty dup porcelain"; }
     if dirty_entries([" M ../x"]).ok { return "dirty escape porcelain"; }
     let green_empty = green_prompt(#{}, sample, "agent/fix/EX-2", []);
@@ -425,17 +469,181 @@ fn blocking_paths(dirty_paths, plan) {
     blocking
 }
 
-fn path_after_rename(rest) {
-    let arrow = " -> ";
+fn octal_value(ch) {
+    if ch == "0" { return 0; }
+    if ch == "1" { return 1; }
+    if ch == "2" { return 2; }
+    if ch == "3" { return 3; }
+    if ch == "4" { return 4; }
+    if ch == "5" { return 5; }
+    if ch == "6" { return 6; }
+    if ch == "7" { return 7; }
+    -1
+}
+
+fn ascii_byte(ch) {
+    let table = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    let i = 0;
+    while i < table.len() {
+        if table.sub_string(i, 1) == ch { return i + 32; }
+        i += 1;
+    }
+    -1
+}
+
+fn utf8_ok(bytes) {
+    let i = 0;
+    let n = bytes.len();
+    while i < n {
+        let b0 = bytes[i];
+        if b0 == 0 { return false; }
+        if b0 < 128 {
+            i += 1;
+            continue;
+        }
+        if b0 >= 194 && b0 <= 223 {
+            if i + 1 >= n { return false; }
+            let b1 = bytes[i + 1];
+            if b1 < 128 || b1 > 191 { return false; }
+            i += 2;
+            continue;
+        }
+        if b0 >= 224 && b0 <= 239 {
+            if i + 2 >= n { return false; }
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            if b2 < 128 || b2 > 191 { return false; }
+            if b0 == 224 {
+                if b1 < 160 || b1 > 191 { return false; }
+            } else if b0 == 237 {
+                if b1 < 128 || b1 > 159 { return false; }
+            } else if b1 < 128 || b1 > 191 {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+        if b0 >= 240 && b0 <= 244 {
+            if i + 3 >= n { return false; }
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            let b3 = bytes[i + 3];
+            if b2 < 128 || b2 > 191 { return false; }
+            if b3 < 128 || b3 > 191 { return false; }
+            if b0 == 240 {
+                if b1 < 144 || b1 > 191 { return false; }
+            } else if b0 == 244 {
+                if b1 < 128 || b1 > 143 { return false; }
+            } else if b1 < 128 || b1 > 191 {
+                return false;
+            }
+            i += 4;
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+// as_string turns invalid UTF-8 into U+FFFD and does not throw.
+fn bytes_to_text(bytes) {
+    if !utf8_ok(bytes) { return (); }
+    let buf = blob();
+    for n in bytes {
+        buf.push(n);
+    }
+    buf.as_string()
+}
+
+fn decode_porcelain_path(token) {
+    if type_of(token) != "string" || token == "" { return (); }
+    if token.sub_string(0, 1) != "\"" {
+        if token.contains("\"") || token.contains("\\") { return (); }
+        return trimmed(token);
+    }
+    let n = token.len();
+    if n < 2 || token.sub_string(n - 1, 1) != "\"" { return (); }
+    let bytes = [];
+    let i = 1;
+    let end = n - 1;
+    while i < end {
+        let ch = token.sub_string(i, 1);
+        if ch == "\\" {
+            if i + 1 >= end { return (); }
+            let esc = token.sub_string(i + 1, 1);
+            if esc == "a" { bytes.push(7); i += 2; continue; }
+            if esc == "b" { bytes.push(8); i += 2; continue; }
+            if esc == "t" { bytes.push(9); i += 2; continue; }
+            if esc == "n" { bytes.push(10); i += 2; continue; }
+            if esc == "v" { bytes.push(11); i += 2; continue; }
+            if esc == "f" { bytes.push(12); i += 2; continue; }
+            if esc == "r" { bytes.push(13); i += 2; continue; }
+            if esc == "\\" { bytes.push(92); i += 2; continue; }
+            if esc == "\"" { bytes.push(34); i += 2; continue; }
+            let digit = octal_value(esc);
+            if digit < 0 { return (); }
+            let val = digit;
+            let used = 1;
+            if i + 2 < end {
+                let second = octal_value(token.sub_string(i + 2, 1));
+                if second >= 0 {
+                    val = val * 8 + second;
+                    used = 2;
+                    if i + 3 < end {
+                        let third = octal_value(token.sub_string(i + 3, 1));
+                        if third >= 0 {
+                            val = val * 8 + third;
+                            used = 3;
+                        }
+                    }
+                }
+            }
+            if val > 255 { return (); }
+            bytes.push(val);
+            i += 1 + used;
+            continue;
+        }
+        if ch == "\"" { return (); }
+        let byte = ascii_byte(ch);
+        if byte < 0 { return (); }
+        bytes.push(byte);
+        i += 1;
+    }
+    bytes_to_text(bytes)
+}
+
+fn split_porcelain_paths(rest) {
+    if type_of(rest) != "string" || rest == "" { return (); }
     let n = rest.len();
     let i = 0;
-    while i + 4 <= n {
-        if rest.sub_string(i, 4) == arrow {
-            return trimmed(rest.sub_string(i + 4, n - (i + 4)));
+    let in_quote = false;
+    while i < n {
+        let ch = rest.sub_string(i, 1);
+        if in_quote {
+            if ch == "\\" {
+                if i + 1 >= n { return (); }
+                i += 2;
+                continue;
+            }
+            if ch == "\"" { in_quote = false; }
+            i += 1;
+            continue;
+        }
+        if ch == "\"" {
+            in_quote = true;
+            i += 1;
+            continue;
+        }
+        if i + 4 <= n && rest.sub_string(i, 4) == " -> " {
+            if i == 0 { return (); }
+            let right = rest.sub_string(i + 4, n - (i + 4));
+            if right == "" { return (); }
+            return [rest.sub_string(0, i), right];
         }
         i += 1;
     }
-    trimmed(rest)
+    if in_quote { return (); }
+    [rest]
 }
 
 fn dirty_row(line) {
@@ -445,11 +653,18 @@ fn dirty_row(line) {
     if line.sub_string(2, 1) != " " {
         return ();
     }
-    let path = path_after_rename(line.sub_string(3, line.len() - 3));
-    if bad_path(path) {
-        return ();
+    let parts = split_porcelain_paths(line.sub_string(3, line.len() - 3));
+    if parts == () { return (); }
+    let paths = [];
+    for token in parts {
+        let path = decode_porcelain_path(token);
+        if path == () || bad_path(path) || list_has(paths, path) {
+            return ();
+        }
+        paths.push(path);
     }
-    #{ path: path, staged: line.sub_string(0, 1) != " " }
+    if paths.len() == 0 { return (); }
+    #{ paths: paths, staged: line.sub_string(0, 1) != " " }
 }
 
 fn dirty_entries(raw) {
@@ -460,13 +675,19 @@ fn dirty_entries(raw) {
         if row == () {
             return #{ ok: false, paths: [], staged: [] };
         }
-        let path = map_str(row, "path");
-        if path == "" || list_has(paths, path) || paths.len() >= 32 {
+        let row_paths = as_array(map_get(row, "paths"));
+        if row_paths.len() == 0 {
             return #{ ok: false, paths: [], staged: [] };
         }
-        paths.push(path);
-        if map_bool(row, "staged", false) {
-            staged.push(path);
+        let row_staged = map_bool(row, "staged", false);
+        for path in row_paths {
+            if path == "" || list_has(paths, path) || paths.len() >= 32 {
+                return #{ ok: false, paths: [], staged: [] };
+            }
+            paths.push(path);
+            if row_staged {
+                staged.push(path);
+            }
         }
     }
     #{ ok: true, paths: paths, staged: staged }
