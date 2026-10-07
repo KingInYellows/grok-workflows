@@ -345,6 +345,9 @@ fn self_check() {
     if runnable_product_command("") { return "empty command accepted"; }
     if runnable_product_command("UNKNOWN && pytest") { return "chained UNKNOWN accepted"; }
     if runnable_product_command("PATH=\".venv/bin:$PATH\" UNKNOWN") { return "prefixed UNKNOWN accepted"; }
+    if runnable_product_command("echo ok\nUNKNOWN") { return "newline UNKNOWN accepted"; }
+    if runnable_product_command("echo ok\rUNKNOWN") { return "cr UNKNOWN accepted"; }
+    if runnable_product_command("pytest -q\n") != true { return "trailing newline rejected"; }
     ""
 }
 
@@ -395,7 +398,7 @@ fn has_unknown_shell_word(text) {
         let ch = "";
         if at_end != true { ch = text.sub_string(i, 1); }
         let break_word = at_end;
-        if ch == " " || ch == "\t" || ch == "&" || ch == "|" || ch == ";" { break_word = true; }
+        if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" { break_word = true; }
         if break_word == true {
             if trim_command_token(word) == "UNKNOWN" { return true; }
             word = "";
@@ -461,7 +464,7 @@ let product_command = map_str(loaded.output, "product_command");
 let terminal = map_str(loaded.output, "terminal");
 if terminal_ok(terminal) != true || invariant == "" || runnable_product_command(product_command) != true {
     let why = "Goal file is missing a terminal, invariant, or one product command";
-    if trimmed(product_command) == "UNKNOWN" {
+    if has_unknown_shell_word(product_command) {
         why = "Product command is UNKNOWN; refusing to implement";
     }
     complete(#{
