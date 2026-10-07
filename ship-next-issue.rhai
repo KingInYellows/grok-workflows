@@ -1,7 +1,7 @@
 let meta = #{
     name: "ship-next-issue",
     description: "Pick the next open issue in any git repo, implement it, review it, submit one Graphite PR, and take one bot-comment pass",
-    when_to_use: "Any git checkout. Picks the next completable open issue for the Linear team matching the origin repo name, or args.issue. Submits one Graphite PR unless args.submit is false. One bot-comment pass after submit, not a long-lived watcher. Never merges. /ship-next-issue or /workflow ship-next-issue.",
+    when_to_use: "Any git checkout. Picks the next completable open issue for the Linear team matching the origin repo name, or args.issue. Submits one Graphite PR unless args.submit is false. One bot-comment pass after submit, not a long-lived watcher. Never merges. Tracked changes that do not overlap the planned files stay unstaged. /ship-next-issue or /workflow ship-next-issue.",
     phases: [
         #{ title: "Select", detail: "rank one open issue" },
         #{ title: "Evaluate", detail: "reject work one PR cannot finish" },
@@ -296,6 +296,16 @@ fn self_check() {
     if branch_for("EX-2") != "agent/fix/EX-2" { return "branch"; }
     if safe_branch("agent/fix/EX-2") != true { return "safe branch"; }
     if clean_paths(["../x", "src/a.ts", "src/a.ts"], 8).paths.len() != 1 { return "paths"; }
+    if kept_paths(["../x"]).ok { return "dirty escape"; }
+    if kept_paths([".gitignore", ".gitignore"]).ok { return "dirty dup"; }
+    let kept = kept_paths([".gitignore"]);
+    if kept.ok != true || kept.paths.len() != 1 { return "dirty keep"; }
+    let sample = #{ test_file: "tests/a.py", production_files: [".github/workflows/deployable-image.yml"] };
+    if blocking_paths(kept.paths, sample).len() != 0 { return "dirty unrelated"; }
+    if blocking_paths([".github/workflows/deployable-image.yml"], sample).len() != 1 { return "dirty overlap"; }
+    if !keep_text([".gitignore"]).contains(".gitignore") { return "keep text"; }
+    if !dirty_prompt().contains("--untracked-files=no") { return "dirty status"; }
+    if !red_prompt(#{}, #{}, "agent/fix/EX-2", "main", [".gitignore"]).contains(".gitignore") { return "red keep"; }
     ""
 }
 
@@ -350,19 +360,71 @@ fn plan_skeptic_prompt(issue, plan, focus) {
     p
 }
 
-fn dirty_prompt() {
-    let p = "You check whether the git worktree is clean. Do not edit, commit, or submit.\n";
-    p += guardrails_text();
-    p += tools_exec();
-    p += "Run git status --porcelain --untracked-files=no. When the output is empty, set clean true and evidence to clean. Otherwise set clean false and put the porcelain text in evidence.\n";
+fn kept_paths(raw) {
+    let out = [];
+    for item in as_array(raw) {
+        let p = trimmed(item);
+        if p == "" || bad_path(p) || list_has(out, p) || out.len() >= 32 {
+            return #{ ok: false, paths: [] };
+        }
+        out.push(p);
+    }
+    #{ ok: true, paths: out }
+}
+
+fn planned_paths(plan) {
+    let out = [];
+    let test_file = map_str(plan, "test_file");
+    if test_file != "" {
+        out.push(test_file);
+    }
+    for item in as_array(map_get(plan, "production_files")) {
+        let p = trimmed(item);
+        if p != "" && !list_has(out, p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn blocking_paths(dirty_paths, plan) {
+    let named = planned_paths(plan);
+    let blocking = [];
+    for path in dirty_paths {
+        if list_has(named, path) {
+            blocking.push(path);
+        }
+    }
+    blocking
+}
+
+fn keep_text(paths) {
+    if type_of(paths) != "array" || paths.len() == 0 {
+        return "If git status --porcelain --untracked-files=no is not empty before you edit, stop and set the proof flag false.\n";
+    }
+    let p = "These paths were already dirty. Do not stage, restore, or edit them:";
+    for path in paths {
+        p += "\n- ";
+        p += path;
+    }
+    p += "\nThe test file and production files are expected once this step changes them. Any other path in git status --porcelain --untracked-files=no means stop and set the proof flag false.\n";
     p
 }
 
-fn red_prompt(issue, plan, branch_name, trunk) {
+fn dirty_prompt() {
+    let p = "You check whether the git worktree has tracked changes. Do not edit, commit, or submit.\n";
+    p += guardrails_text();
+    p += tools_exec();
+    p += "Run git status --porcelain --untracked-files=no. When the output is empty, set clean true and paths to an empty array.\n";
+    p += "Otherwise set clean false. paths lists each repo-relative path, with the status prefix removed. Do not include untracked files. A rename contributes both paths. Leave paths empty when you cannot name every path.\n";
+    p
+}
+
+fn red_prompt(issue, plan, branch_name, trunk, keep_paths) {
     let p = "You create one Graphite branch and add a failing test. Do not implement the fix. Do not commit. Do not submit.\n";
     p += guardrails_text();
     p += tools_exec();
-    p += "If git status --porcelain --untracked-files=no is not empty, set red_proven false and stop.\n";
+    p += keep_text(keep_paths);
     p += "Create branch_name from trunk. When the current branch is trunk, run gt --no-interactive branch create branch_name with no -a, -u, -m, or --all.\n";
     p += "When it is not trunk, gt --no-interactive checkout trunk, then that branch create. If checkout fails because trunk is checked out in another worktree, do not touch that checkout. Use git switch -c branch_name trunk and then gt track --parent trunk --no-interactive. git switch -c is allowed only for that case.\n";
     p += "Then gt branch info. The parent must be trunk. If it is not, set red_proven false and stop.\n";
@@ -376,14 +438,16 @@ fn red_prompt(issue, plan, branch_name, trunk) {
         test_file: map_str(plan, "test_file"),
         test_command: map_str(plan, "test_command"),
         summary: map_str(plan, "summary"),
+        keep_paths: keep_paths,
     });
     p
 }
 
-fn green_prompt(issue, plan, branch_name) {
+fn green_prompt(issue, plan, branch_name, keep_paths) {
     let p = "You make one failing test pass. Do not submit.\n";
     p += guardrails_text();
     p += tools_exec();
+    p += keep_text(keep_paths);
     p += "Stay on branch_name. Edit only test_file and production_files. Do not delete the failing test.\n";
     p += "Run test_command exactly. Set green_proven true only when it exits 0. Put a short passing excerpt in pass_excerpt.\n";
     p += "When it fails, do not commit and set green_proven false.\n";
@@ -396,6 +460,7 @@ fn green_prompt(issue, plan, branch_name) {
         test_file: map_str(plan, "test_file"),
         test_command: map_str(plan, "test_command"),
         production_files: map_get(plan, "production_files"),
+        keep_paths: keep_paths,
     });
     p
 }
@@ -429,7 +494,7 @@ fn finding_skeptic_prompt(finding) {
     p
 }
 
-fn repair_prompt(issue, plan, branch_name, findings, file_limit) {
+fn repair_prompt(issue, plan, branch_name, findings, file_limit, keep_paths) {
     let files = [];
     for f in findings {
         let path = map_str(f, "file");
@@ -440,6 +505,7 @@ fn repair_prompt(issue, plan, branch_name, findings, file_limit) {
     let p = "You fix accepted review findings on one Graphite branch. Do not run gt submit. Do not create a pull request.\n";
     p += guardrails_text();
     p += tools_exec();
+    p += keep_text(keep_paths);
     p += "Checkout branch_name with gt --no-interactive checkout. Edit only the files in the packet. Run test_command exactly.\n";
     p += "When it fails, do not commit. Set green_proven false.\n";
     p += "When it passes, stage only those files and run gt --no-interactive modify --commit -m with a fix: message that contains Refs IDENTIFIER. Do not amend. Set green_proven true.\n";
@@ -449,6 +515,7 @@ fn repair_prompt(issue, plan, branch_name, findings, file_limit) {
         test_command: map_str(plan, "test_command"),
         files: files,
         findings: findings,
+        keep_paths: keep_paths,
     });
     p
 }
@@ -509,10 +576,11 @@ fn bot_reply_prompt(pr, replies) {
     p
 }
 
-fn bot_fix_prompt(issue, plan, branch_name, files, threads) {
+fn bot_fix_prompt(issue, plan, branch_name, files, threads, keep_paths) {
     let p = "You apply one bot-comment fix on the current pull request. Do not reply. Do not resolve. Do not submit.\n";
     p += guardrails_text();
     p += tools_exec();
+    p += keep_text(keep_paths);
     p += "Checkout branch_name. Edit only the files in the packet. Run test_command exactly. This is the one fix attempt.\n";
     p += "When the test fails, do not commit. Set green_proven false.\n";
     p += "When it passes, stage named paths only and gt --no-interactive modify --commit -m with a fix: message that contains Refs IDENTIFIER. Do not amend. Set green_proven true.\n";
@@ -522,6 +590,7 @@ fn bot_fix_prompt(issue, plan, branch_name, files, threads) {
         test_command: map_str(plan, "test_command"),
         files: files,
         threads: threads,
+        keep_paths: keep_paths,
     });
     p
 }
@@ -646,10 +715,10 @@ let verdict_schema = #{
 let dirty_schema = #{
     "type": "object",
     "additionalProperties": false,
-    "required": ["clean", "evidence"],
+    "required": ["clean", "paths"],
     "properties": #{
         "clean": #{ "type": "boolean" },
-        "evidence": #{ "type": "string" },
+        "paths": #{ "type": "array", "maxItems": 32, "items": #{ "type": "string" } },
     },
 };
 
@@ -935,12 +1004,47 @@ if do_confirm {
 phase("Implement");
 let dirty_r = agent(dirty_prompt(), #{ label: "dirty", capability_mode: "execute", output_schema: dirty_schema });
 let dirty = agent_map(dirty_r);
-if dirty == () || !map_bool(dirty, "clean", false) {
-    notes.push(note_row("implement", "Worktree has tracked changes. Commit or stash them, then run again."));
+if dirty == () {
+    notes.push(note_row("implement", "Could not read tracked changes. Nothing was edited."));
     finish(notes);
 }
+let kept = kept_paths(map_get(dirty, "paths"));
+if kept.ok != true {
+    notes.push(note_row("implement", "Tracked changes were not a list of safe paths. Nothing was edited."));
+    finish(notes);
+}
+let keep_paths = kept.paths;
+if map_bool(dirty, "clean", false) {
+    if keep_paths.len() != 0 {
+        notes.push(note_row("implement", "Clean status listed paths. Nothing was edited."));
+        finish(notes);
+    }
+} else if keep_paths.len() == 0 {
+    notes.push(note_row("implement", "Tracked changes had no paths. Nothing was edited."));
+    finish(notes);
+} else {
+    let blocking = blocking_paths(keep_paths, plan);
+    if blocking.len() > 0 {
+        let why = "Tracked changes overlap the planned files.";
+        for path in blocking {
+            why += " ";
+            why += path;
+            why += ".";
+        }
+        why += " Commit or stash those paths, then run again.";
+        notes.push(note_row("implement", why));
+        finish(notes);
+    }
+    let ignored = "Left pre-existing tracked changes unstaged.";
+    for path in keep_paths {
+        ignored += " ";
+        ignored += path;
+        ignored += ".";
+    }
+    notes.push(note_row("implement", ignored));
+}
 let red_r = agent(
-    red_prompt(chosen, plan, branch_name, trunk),
+    red_prompt(chosen, plan, branch_name, trunk, keep_paths),
     #{ label: "red", capability_mode: "all", output_schema: red_schema }
 );
 let red = agent_map(red_r);
@@ -949,7 +1053,7 @@ if red == () || !map_bool(red, "red_proven", false) {
     finish(notes);
 }
 let green_r = agent(
-    green_prompt(chosen, plan, branch_name),
+    green_prompt(chosen, plan, branch_name, keep_paths),
     #{ label: "green", capability_mode: "all", output_schema: green_schema }
 );
 let green = agent_map(green_r);
@@ -1035,7 +1139,7 @@ let pr_number = 0;
 let pr_url = "";
 if confirmed.len() > 0 {
     let repair_r = agent(
-        repair_prompt(chosen, plan, branch_name, confirmed, MAX_FILES),
+        repair_prompt(chosen, plan, branch_name, confirmed, MAX_FILES, keep_paths),
         #{ label: "repair", capability_mode: "all", output_schema: green_schema }
     );
     let repair = agent_map(repair_r);
@@ -1131,7 +1235,7 @@ if replies.len() > 0 {
 }
 if fixes.len() > 0 {
     let fix_r = agent(
-        bot_fix_prompt(chosen, plan, branch_name, fix_files, fixes),
+        bot_fix_prompt(chosen, plan, branch_name, fix_files, fixes, keep_paths),
         #{ label: "bot-fix", capability_mode: "all", output_schema: green_schema }
     );
     let fix_out = agent_map(fix_r);
