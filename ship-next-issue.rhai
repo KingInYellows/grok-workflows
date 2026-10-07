@@ -347,6 +347,18 @@ fn self_check() {
     if kept_paths([".gitignore", ".gitignore"]).ok { return "dirty dup"; }
     let kept = kept_paths([".gitignore"]);
     if kept.ok != true || kept.paths.len() != 1 { return "dirty keep"; }
+    if kept_paths([""]).ok { return "dirty empty"; }
+    if kept_paths(["   "]).ok { return "dirty blank"; }
+    let cap = [];
+    let cap_i = 0;
+    while cap_i < 32 {
+        cap.push("k" + cap_i.to_string());
+        cap_i += 1;
+    }
+    let capped = kept_paths(cap);
+    if capped.ok != true || capped.paths.len() != 32 { return "dirty cap 32"; }
+    cap.push("k32");
+    if kept_paths(cap).ok { return "dirty cap 33"; }
     let sample = #{ test_file: "tests/a.py", production_files: [".github/workflows/deployable-image.yml"] };
     if blocking_paths(kept.paths, sample).len() != 0 { return "dirty unrelated"; }
     if blocking_paths([".github/workflows/deployable-image.yml"], sample).len() != 1 { return "dirty overlap"; }
@@ -386,7 +398,15 @@ fn self_check() {
     if as_array(map_get(alias_row, "paths"))[0] != "tests/a.py" { return "alias porcelain path"; }
     if !bad_path("a\nb") { return "control newline"; }
     if !bad_path("a\rb") { return "control cr"; }
+    if !bad_path("a\u007fb") { return "control del"; }
+    if !bad_path("a\u0085b") { return "control nel"; }
+    if !bad_path("a\u2028b") { return "control line sep"; }
+    if !bad_path("a\u2029b") { return "control para sep"; }
     if dirty_entries(["M  \"bad\\nname.py\""]).ok { return "quote newline"; }
+    if dirty_entries(["M  \"bad\\177name.py\""]).ok { return "quote del"; }
+    if dirty_entries(["M  \"bad\\302\\205name.py\""]).ok { return "quote nel"; }
+    if dirty_entries(["M  \"bad\\342\\200\\250name.py\""]).ok { return "quote line sep"; }
+    if dirty_entries(["M  \"bad\\342\\200\\251name.py\""]).ok { return "quote para sep"; }
     if !keep_text(["a\nb"]).contains("\\n") { return "keep escape"; }
     let renamed = dirty_entries(["R  old.txt -> new.txt"]);
     if map_bool(renamed, "ok", false) != true { return "rename parse"; }
