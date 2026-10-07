@@ -696,6 +696,13 @@ fn publishes_unknown_command(body) {
             if trimmed_line == "{" {
                 in_group = true;
                 continued = false;
+            } else if starts_with(trimmed_line, "{ ") || starts_with(trimmed_line, "{\t") {
+                in_group = true;
+                let rest = trimmed_line.sub_string(1, trimmed_line.len() - 1);
+                if first_shell_word(rest) == "UNKNOWN" {
+                    return true;
+                }
+                continued = line_continues_shell(rest);
             } else if trimmed_line == "}" {
                 in_group = false;
                 continued = false;
@@ -768,6 +775,10 @@ fn self_check() {
     if publishes_unknown_command("{\n  echo \"HEAD\" &&\n  UNKNOWN | tee log\n}\n") != true { return "piped UNKNOWN missed"; }
     if publishes_unknown_command("{\n  echo \"HEAD\" &&\n  UNKNOWN > log\n}\n") != true { return "redirect UNKNOWN missed"; }
     if publishes_unknown_command("echo \"HEAD\" &&\nUNKNOWN --flag\n") != true { return "continuation UNKNOWN missed"; }
+    if publishes_unknown_command("{ echo ready\nUNKNOWN --flag\n}\n") != true { return "inline group UNKNOWN missed"; }
+    if publishes_unknown_command("{ echo ready\npytest -q\n}\n") { return "inline group real command looked unknown"; }
+    if publishes_unknown_command("{ UNKNOWN --flag\n}\n") != true { return "inline opener UNKNOWN missed"; }
+    if publishes_unknown_command("{\tUNKNOWN --flag\n}\n") != true { return "tab opener UNKNOWN missed"; }
     if publishes_unknown_command("UNKNOWN plus the path you tried.\n") { return "callee sentence looked unknown"; }
     if publishes_unknown_command("Callee contract\nUNKNOWN src/callee.rs\n") { return "callee note looked unknown"; }
     ""
