@@ -1,0 +1,16 @@
+goal-execute.rhai
+  h_6000354274ce50 351-360,379,390,393-395,414-416
+goal-planning.rhai
+  h_6000354274ce50 581,592,595-597,616-618,657-679,730,738,812-827
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b7f7a873954888e5d8f99cbfe75bc6279b9404d8",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
