@@ -348,6 +348,16 @@ fn self_check() {
     if runnable_product_command("echo ok\nUNKNOWN") { return "newline UNKNOWN accepted"; }
     if runnable_product_command("echo ok\rUNKNOWN") { return "cr UNKNOWN accepted"; }
     if runnable_product_command("pytest -q\n") != true { return "trailing newline rejected"; }
+    if runnable_product_command("UNKNOWN.") { return "punctuated UNKNOWN accepted"; }
+    if runnable_product_command("\"UNKNOWN\"") { return "quoted UNKNOWN accepted"; }
+    if runnable_product_command("(UNKNOWN)") { return "paren UNKNOWN accepted"; }
+    if runnable_product_command("UNKNOWN --flag") { return "flagged UNKNOWN accepted"; }
+    if runnable_product_command("UNKNOWN>log") { return "glued redirect accepted"; }
+    if runnable_product_command("UNKNOWN<log") { return "glued input accepted"; }
+    if runnable_product_command("`UNKNOWN`") { return "backtick UNKNOWN accepted"; }
+    if runnable_product_command("$(UNKNOWN)") { return "substitution UNKNOWN accepted"; }
+    if runnable_product_command("UNKNOWN|tee") { return "glued pipe accepted"; }
+    if runnable_product_command("${UNKNOWN}") != true { return "variable command rejected"; }
     ""
 }
 
@@ -366,7 +376,7 @@ fn trim_command_token(s) {
     let guard = 0;
     while t.len() > 0 && guard < 8 {
         let ch = t.sub_string(t.len() - 1, 1);
-        if ch == "." || ch == "," || ch == ";" || ch == ":" || ch == ")" || ch == "\"" || ch == "'" {
+        if ch == "." || ch == "," || ch == ";" || ch == ":" || ch == ")" || ch == "\"" || ch == "'" || ch == "`" {
             t = t.sub_string(0, t.len() - 1);
             t = trimmed(t);
         } else {
@@ -377,8 +387,11 @@ fn trim_command_token(s) {
     guard = 0;
     while t.len() > 0 && guard < 8 {
         let ch = t.sub_string(0, 1);
-        if ch == "(" || ch == "\"" || ch == "'" {
+        if ch == "(" || ch == "\"" || ch == "'" || ch == "`" {
             t = t.sub_string(1, t.len() - 1);
+            t = trimmed(t);
+        } else if t.len() >= 2 && t.sub_string(0, 2) == "$(" {
+            t = t.sub_string(2, t.len() - 2);
             t = trimmed(t);
         } else {
             break;
@@ -398,7 +411,9 @@ fn has_unknown_shell_word(text) {
         let ch = "";
         if at_end != true { ch = text.sub_string(i, 1); }
         let break_word = at_end;
-        if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" { break_word = true; }
+        if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" || ch == ">" || ch == "<" {
+            break_word = true;
+        }
         if break_word == true {
             if trim_command_token(word) == "UNKNOWN" { return true; }
             word = "";

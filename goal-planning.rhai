@@ -578,7 +578,7 @@ fn trim_command_token(s) {
     let guard = 0;
     while t.len() > 0 && guard < 8 {
         let ch = t.sub_string(t.len() - 1, 1);
-        if ch == "." || ch == "," || ch == ";" || ch == ":" || ch == ")" || ch == "\"" || ch == "'" {
+        if ch == "." || ch == "," || ch == ";" || ch == ":" || ch == ")" || ch == "\"" || ch == "'" || ch == "`" {
             t = t.sub_string(0, t.len() - 1);
             t = trimmed(t);
         } else {
@@ -589,8 +589,11 @@ fn trim_command_token(s) {
     guard = 0;
     while t.len() > 0 && guard < 8 {
         let ch = t.sub_string(0, 1);
-        if ch == "(" || ch == "\"" || ch == "'" {
+        if ch == "(" || ch == "\"" || ch == "'" || ch == "`" {
             t = t.sub_string(1, t.len() - 1);
+            t = trimmed(t);
+        } else if t.len() >= 2 && t.sub_string(0, 2) == "$(" {
+            t = t.sub_string(2, t.len() - 2);
             t = trimmed(t);
         } else {
             break;
@@ -610,7 +613,9 @@ fn has_unknown_shell_word(text) {
         let ch = "";
         if at_end != true { ch = text.sub_string(i, 1); }
         let break_word = at_end;
-        if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" { break_word = true; }
+        if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" || ch == ">" || ch == "<" {
+            break_word = true;
+        }
         if break_word == true {
             if trim_command_token(word) == "UNKNOWN" { return true; }
             word = "";
@@ -647,6 +652,29 @@ fn first_shell_word(text) {
         i += 1;
     }
     ""
+}
+
+fn segment_command_unknown(text) {
+    if type_of(text) != "string" || text == "" { return false; }
+    let n = text.len();
+    let i = 0;
+    let segment = "";
+    while i <= n {
+        let at_end = i == n;
+        let ch = "";
+        if at_end != true { ch = text.sub_string(i, 1); }
+        let break_seg = at_end;
+        if ch == "|" || ch == "&" || ch == ";" { break_seg = true; }
+        if break_seg == true {
+            if first_shell_word(segment) == "UNKNOWN" { return true; }
+            segment = "";
+        } else {
+            segment += ch;
+        }
+        if at_end { break; }
+        i += 1;
+    }
+    false
 }
 
 fn line_continues_shell(line) {
@@ -699,7 +727,7 @@ fn publishes_unknown_command(body) {
             } else if starts_with(trimmed_line, "{ ") || starts_with(trimmed_line, "{\t") {
                 in_group = true;
                 let rest = trimmed_line.sub_string(1, trimmed_line.len() - 1);
-                if first_shell_word(rest) == "UNKNOWN" {
+                if first_shell_word(rest) == "UNKNOWN" || line_is_unknown_command(rest) || segment_command_unknown(rest) {
                     return true;
                 }
                 continued = line_continues_shell(rest);
@@ -707,7 +735,7 @@ fn publishes_unknown_command(body) {
                 in_group = false;
                 continued = false;
             } else {
-                if (in_group == true || continued == true) && first_shell_word(line) == "UNKNOWN" {
+                if (in_group == true || continued == true) && segment_command_unknown(line) {
                     return true;
                 }
                 continued = line_continues_shell(line);
@@ -781,6 +809,22 @@ fn self_check() {
     if publishes_unknown_command("{\tUNKNOWN --flag\n}\n") != true { return "tab opener UNKNOWN missed"; }
     if publishes_unknown_command("UNKNOWN plus the path you tried.\n") { return "callee sentence looked unknown"; }
     if publishes_unknown_command("Callee contract\nUNKNOWN src/callee.rs\n") { return "callee note looked unknown"; }
+    if publishes_unknown_command("{ PATH=\".venv/bin:$PATH\" UNKNOWN --flag\n") != true { return "brace prefix UNKNOWN missed"; }
+    if publishes_unknown_command("Product command: UNKNOWN>log\n") != true { return "glued redirect missed"; }
+    if publishes_unknown_command("Product command: UNKNOWN<log\n") != true { return "glued input missed"; }
+    if publishes_unknown_command("Product command: `UNKNOWN`\n") != true { return "backtick product missed"; }
+    if publishes_unknown_command("Product command: $(UNKNOWN)\n") != true { return "substitution product missed"; }
+    if publishes_unknown_command("Product command: ${UNKNOWN}\n") { return "variable product looked unknown"; }
+    if publishes_unknown_command("{\n  echo \"HEAD\" &&\n  UNKNOWN>log\n}\n") != true { return "glued group redirect missed"; }
+    if publishes_unknown_command("{\n  echo \"HEAD\" &&\n  UNKNOWN|tee\n}\n") != true { return "glued group pipe missed"; }
+    if publishes_unknown_command("{\n  echo \"HEAD\" &&\n  echo | UNKNOWN\n}\n") != true { return "later pipe UNKNOWN missed"; }
+    if publishes_unknown_command("{\n  echo \"HEAD\" &&\n  echo UNKNOWN\n}\n") { return "group argument looked unknown"; }
+    if publishes_unknown_command("{\n  echo \"HEAD\" &&\n  pytest > log\n}\n") { return "group redirect looked unknown"; }
+    if publishes_unknown_command("echo \"HEAD\" || UNKNOWN\n") != true { return "or UNKNOWN missed"; }
+    if publishes_unknown_command("echo \"HEAD\" ||\nUNKNOWN --flag\n") != true { return "or continuation missed"; }
+    if publishes_unknown_command("UNKNOWN || pytest\n") != true { return "leading or UNKNOWN missed"; }
+    if publishes_unknown_command("UNKNOWN\r\n") != true { return "cr UNKNOWN missed"; }
+    if publishes_unknown_command("Product command: UNKNOWN\r\n") != true { return "cr product missed"; }
     ""
 }
 
