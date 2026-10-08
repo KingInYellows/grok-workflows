@@ -516,6 +516,54 @@ fn self_check() {
     };
     let absent_works = [#{ path: ".gitignore", work: "absent" }];
     if keep_drift(keep_list, [], absent_works, keep_absent) != "" { return "keep absent"; }
+    let sub_hash = "sub:" + keep_hash + ":dirty";
+    let sub_other = "sub:" + other_hash + ":clean";
+    let sub_works = [#{ path: "vendor/lib", work: sub_hash }];
+    let sub_same = #{
+        paths: [" M vendor/lib"],
+        works: [#{ path: "vendor/lib", work: sub_hash }],
+    };
+    if keep_drift(["vendor/lib"], [], sub_works, sub_same) != "" { return "keep sub same"; }
+    let sub_moved = #{
+        paths: [" M vendor/lib"],
+        works: [#{ path: "vendor/lib", work: sub_other }],
+    };
+    if keep_drift(["vendor/lib"], [], sub_works, sub_moved) != "rewritten" { return "keep sub moved"; }
+    let sub_absent = #{
+        paths: [" M vendor/lib"],
+        works: [#{ path: "vendor/lib", work: "absent" }],
+    };
+    let sub_absent_works = [#{ path: "vendor/lib", work: "absent" }];
+    if keep_drift(["vendor/lib"], [], sub_absent_works, sub_absent) != "unreadable" { return "keep sub absent"; }
+    if !list_has(as_array(map_get(renamed, "missing")), "old.txt") { return "rename missing source"; }
+    if list_has(as_array(map_get(renamed, "missing")), "new.txt") { return "rename missing dest"; }
+    let dir_plan = #{ test_file: "tests/a.py", production_files: ["src"] };
+    if blocking_paths(["src/a.ts"], dir_plan).len() != 1 { return "plan dir child"; }
+    if blocking_paths(["src-x/a.ts"], dir_plan).len() != 0 { return "plan dir cousin"; }
+    if blocking_paths(["src/a.ts"], sample).len() != 0 { return "plan file child"; }
+    let dot_dir = #{ test_file: "tests/a.py", production_files: ["./src"] };
+    if blocking_paths(["src/a.ts"], dot_dir).len() != 1 { return "plan dot dir"; }
+    if !plan_literals(sample) { return "plan sample literal"; }
+    if !plan_literals(dir_plan) { return "plan dir name"; }
+    let glob_plan = #{ test_file: "tests/a.py", production_files: ["src/*"] };
+    if plan_literals(glob_plan) { return "plan glob"; }
+    let slash_dir_plan = #{ test_file: "src/", production_files: ["src/a.ts"] };
+    if plan_literals(slash_dir_plan) { return "plan trailing"; }
+    let magic_plan = #{ test_file: "tests/a.py", production_files: [":(glob)src/a.ts"] };
+    if plan_literals(magic_plan) { return "plan magic"; }
+    if keep_note("rewritten") != "A kept path was rewritten." { return "keep note rewritten"; }
+    if keep_note("staged") != "A kept path was staged." { return "keep note staged"; }
+    if keep_note("restored") != "A kept path was restored or dropped." { return "keep note restored"; }
+    if keep_note("unreadable") != "Could not recheck kept paths." { return "keep note unreadable"; }
+    if keep_note("") != "" { return "keep note empty"; }
+    if !backup_root_ok("/repo/.git/ship-next-issue-keep") { return "backup root"; }
+    if backup_root_ok("repo/.git/ship-next-issue-keep") { return "backup relative"; }
+    if backup_root_ok("/repo/ship-next-issue-keep") { return "backup not git"; }
+    if backup_root_ok("/repo/.git/../ship-next-issue-keep") { return "backup dotdot"; }
+    if !keep_backup_prompt([".gitignore"]).contains("ship-next-issue-keep") { return "backup prompt"; }
+    if !keep_backup_prompt([".gitignore"]).contains("Do not edit") { return "backup prompt edit"; }
+    if !keep_backup_prompt([".gitignore"]).contains("backed_up false") { return "backup dirty dir"; }
+    if !keep_restore_prompt([".gitignore"], "/repo/.git/ship-next-issue-keep").contains(".gitignore") { return "restore prompt"; }
     ""
 }
 
@@ -597,15 +645,52 @@ fn planned_paths(plan) {
     out
 }
 
+fn path_under(parent, child) {
+    if parent == "" || child == "" || parent == child { return false; }
+    let prefix = parent;
+    if prefix.sub_string(prefix.len() - 1, 1) != "/" {
+        prefix += "/";
+    }
+    if child.len() <= prefix.len() { return false; }
+    child.sub_string(0, prefix.len()) == prefix
+}
+
 fn blocking_paths(dirty_paths, plan) {
     let named = planned_paths(plan);
     let blocking = [];
     for path in dirty_paths {
-        if list_has(named, path) {
+        let hit = list_has(named, path);
+        if !hit {
+            for named_path in named {
+                if path_under(named_path, path) {
+                    hit = true;
+                }
+            }
+        }
+        if hit {
             blocking.push(path);
         }
     }
     blocking
+}
+
+fn literal_plan_path(path) {
+    let p = canonical_rel_path(path);
+    if p == "" || bad_path(p) { return false; }
+    if p.contains("*") || p.contains("?") || p.contains("[") || p.contains("]") { return false; }
+    if p.sub_string(0, 1) == ":" { return false; }
+    if p.sub_string(p.len() - 1, 1) == "/" { return false; }
+    true
+}
+
+fn plan_literals(plan) {
+    if !literal_plan_path(map_str(plan, "test_file")) { return false; }
+    let n = 0;
+    for item in as_array(map_get(plan, "production_files")) {
+        if !literal_plan_path(trimmed(item)) { return false; }
+        n += 1;
+    }
+    n > 0
 }
 
 fn octal_value(ch) {
@@ -812,6 +897,22 @@ fn split_porcelain_paths(rest) {
     [rest]
 }
 
+fn row_missing(index_col, work_col, paths) {
+    let missing = [];
+    if paths.len() == 2 {
+        if index_col == "R" || index_col == "C" {
+            missing.push(paths[0]);
+        }
+        return missing;
+    }
+    if paths.len() == 1 {
+        if work_col == "D" || index_col == "D" {
+            missing.push(paths[0]);
+        }
+    }
+    missing
+}
+
 fn dirty_row(line) {
     if type_of(line) != "string" || trimmed(line) == "" || line.len() < 4 {
         return ();
@@ -832,37 +933,47 @@ fn dirty_row(line) {
         paths.push(path);
     }
     if paths.len() == 0 { return (); }
-    #{ paths: paths, staged: line.sub_string(0, 1) != " " }
+    let index_col = line.sub_string(0, 1);
+    let work_col = line.sub_string(1, 1);
+    #{
+        paths: paths,
+        staged: index_col != " ",
+        missing: row_missing(index_col, work_col, paths),
+    }
 }
 
 fn dirty_entries(raw) {
     let paths = [];
     let staged = [];
+    let missing = [];
     for item in as_array(raw) {
         let row = dirty_row(item);
         if row == () {
-            return #{ ok: false, paths: [], staged: [] };
+            return #{ ok: false, paths: [], staged: [], missing: [] };
         }
         let row_paths = as_array(map_get(row, "paths"));
         if row_paths.len() == 0 {
-            return #{ ok: false, paths: [], staged: [] };
+            return #{ ok: false, paths: [], staged: [], missing: [] };
         }
         let row_staged = map_bool(row, "staged", false);
+        let gone = as_array(map_get(row, "missing"));
         for path in row_paths {
             if path == "" || list_has(paths, path) || paths.len() >= 32 {
-                return #{ ok: false, paths: [], staged: [] };
+                return #{ ok: false, paths: [], staged: [], missing: [] };
             }
             paths.push(path);
             if row_staged {
                 staged.push(path);
             }
+            if list_has(gone, path) && !list_has(missing, path) {
+                missing.push(path);
+            }
         }
     }
-    #{ ok: true, paths: paths, staged: staged }
+    #{ ok: true, paths: paths, staged: staged, missing: missing }
 }
 
-fn hex_work(token) {
-    if token == "absent" { return true; }
+fn hex_chars(token) {
     let n = token.len();
     if n != 40 && n != 64 { return false; }
     let hex = "0123456789abcdef";
@@ -872,6 +983,25 @@ fn hex_work(token) {
         i += 1;
     }
     true
+}
+
+// absent is only a stable snapshot of a missing worktree file.
+// A submodule directory uses sub:<hex>:clean or sub:<hex>:dirty.
+fn submodule_work(token) {
+    if type_of(token) != "string" || token.len() < 10 { return false; }
+    if token.sub_string(0, 4) != "sub:" { return false; }
+    let tail = "";
+    if token.len() >= 6 {
+        tail = token.sub_string(token.len() - 6, 6);
+    }
+    if tail != ":clean" && tail != ":dirty" { return false; }
+    hex_chars(token.sub_string(4, token.len() - 10))
+}
+
+fn hex_work(token) {
+    if token == "absent" { return true; }
+    if submodule_work(token) { return true; }
+    hex_chars(token)
 }
 
 fn work_for(works, path) {
@@ -905,12 +1035,19 @@ fn keep_drift(keep_paths, before_staged, before_works, after_raw) {
     if after_works == () { return "unreadable"; }
     let after_paths = as_array(map_get(after_entries, "paths"));
     let after_staged = as_array(map_get(after_entries, "staged"));
+    let missing = as_array(map_get(after_entries, "missing"));
     for path in keep_paths {
         if !list_has(after_paths, path) { return "restored"; }
         if list_has(before_staged, path) != list_has(after_staged, path) { return "staged"; }
         let before = work_for(before_works, path);
         let after = work_for(after_works, path);
-        if before == "" || after == "" || before != after { return "rewritten"; }
+        if before == "" || after == "" { return "rewritten"; }
+        if before == "absent" || after == "absent" {
+            if before != after { return "rewritten"; }
+            if !list_has(missing, path) { return "unreadable"; }
+        } else if before != after {
+            return "rewritten";
+        }
     }
     ""
 }
@@ -944,7 +1081,7 @@ fn keep_text(paths) {
         p += json_encode(path);
     }
     p += "\nThe test file and production files are expected once this step changes them. Any other path in git status --porcelain --untracked-files=no means stop and set the proof flag false.\n";
-    p += "The script stores each of these paths' index column and worktree hash. It stops when a later step restores, rewrites, stages, or drops one.\n";
+    p += "The script stores each of these paths' index column and worktree hash. It copies them into the git directory before editing and copies them back if a later step changes one.\n";
     p
 }
 
@@ -954,7 +1091,7 @@ fn dirty_prompt() {
     p += tools_exec();
     p += "Run git status --porcelain --untracked-files=no. When the output is empty, set clean true and paths to an empty array.\n";
     p += "Otherwise set clean false. paths lists each porcelain line exactly, including the two-character status and the space after it. Do not trim a leading space. Do not drop the status. Do not include untracked files. A rename stays one line. Leave paths empty when you cannot copy every line.\n";
-    p += "works has one object per tracked path. path is the repo-relative path. work is the lowercase hex from git hash-object -- path. When that path is not a worktree file, set work to absent. When clean is true, works is empty.\n";
+    p += "works has one object per tracked path. path is the repo-relative path. work is the lowercase hex from git hash-object -- path. When the path is a submodule or other directory, do not use hash-object. Set work to sub: plus the lowercase hex from git -C path rev-parse HEAD, then :clean or :dirty. Use :dirty when git -C path status --porcelain is not empty. When the path is not a worktree file and not a directory, set work to absent. When clean is true, works is empty.\n";
     p
 }
 
@@ -964,9 +1101,74 @@ fn keep_check_prompt(keep_paths) {
     p += tools_exec();
     p += "Run git status --porcelain --untracked-files=no. Set clean true only when that output is empty. Otherwise set clean false.\n";
     p += "paths lists each porcelain line exactly, including the two-character status and the space after it. Do not trim a leading space. Do not drop the status. A rename stays one line.\n";
-    p += "works has one object per path in the packet. path is that repo-relative path. work is the lowercase hex from git hash-object -- path. When that command fails because the path is not a worktree file, set work to absent. Do not hash any other path.\n";
+    p += "works has one object per path in the packet. path is that repo-relative path. work is the lowercase hex from git hash-object -- path. When the path is a submodule or other directory, do not use hash-object. Set work to sub: plus the lowercase hex from git -C path rev-parse HEAD, then :clean or :dirty. Use :dirty when git -C path status --porcelain is not empty. When the path is not a worktree file and not a directory, set work to absent. Do not hash any other path.\n";
     p += packet_line(#{ keep_paths: keep_paths });
     p
+}
+
+fn keep_backup_prompt(keep_paths) {
+    let p = "You copy kept paths into the git directory. Do not edit, stage, restore, commit, or submit any worktree file.\n";
+    p += guardrails_text();
+    p += tools_exec();
+    p += "Run git rev-parse --absolute-git-dir. backup_root is that absolute directory plus /ship-next-issue-keep. Create that directory only.\n";
+    p += "For each path in the packet, leave the worktree unchanged.\n";
+    p += "When the path is a regular file or symlink, copy it to backup_root/path and create parent directories under backup_root only.\n";
+    p += "When the path is missing from the worktree, write an empty marker at backup_root/path.absent. Do not create the worktree path.\n";
+    p += "When the path is a directory and git -C path status --porcelain is not empty, or git -C path rev-parse HEAD fails, set backed_up false. Do not copy the directory.\n";
+    p += "When the path is a directory and that status is empty, write one line to backup_root/path.submodule and do not copy the directory. The line is sub: plus the lowercase hex from git -C path rev-parse HEAD, then :clean. Do not run git stash, checkout, reset, or clean.\n";
+    p += "Set backed_up true only when every path was copied or marked and no directory was dirty. Set backup_root to that absolute directory. It must end with /ship-next-issue-keep and contain /.git/.\n";
+    p += packet_line(#{ keep_paths: keep_paths });
+    p
+}
+
+fn keep_restore_prompt(keep_paths, backup_root) {
+    let p = "You restore kept paths from a backup. Do not stage, commit, or submit.\n";
+    p += guardrails_text();
+    p += tools_exec();
+    p += "Touch only the paths in the packet.\n";
+    p += "When backup_root/path exists, copy it onto the worktree path and replace the worktree bytes.\n";
+    p += "When backup_root/path.absent exists, remove the worktree path if it exists.\n";
+    p += "When backup_root/path.submodule exists, read its one line. When the line ends with :clean, run git -C path checkout of the hex between sub: and :clean. When it ends with :dirty, do not checkout and set restored false.\n";
+    p += "Set restored true only when every path matches its backup marker.\n";
+    p += packet_line(#{ keep_paths: keep_paths, backup_root: backup_root });
+    p
+}
+
+fn backup_root_ok(path) {
+    if type_of(path) != "string" { return false; }
+    let p = trimmed(path);
+    if p == "" || p.sub_string(0, 1) != "/" { return false; }
+    if p.contains("..") || control_path(p) { return false; }
+    if !p.contains("/.git/") { return false; }
+    let suffix = "/ship-next-issue-keep";
+    if p.len() <= suffix.len() { return false; }
+    p.sub_string(p.len() - suffix.len(), suffix.len()) == suffix
+}
+
+fn keep_backup(keep_paths, schema) {
+    if type_of(keep_paths) != "array" || keep_paths.len() == 0 { return ""; }
+    let backup_r = agent(
+        keep_backup_prompt(keep_paths),
+        #{ label: "keep-backup", capability_mode: "execute", output_schema: schema }
+    );
+    let backup = agent_map(backup_r);
+    if backup == () || !map_bool(backup, "backed_up", false) { return (); }
+    let root = map_str(backup, "backup_root");
+    if !backup_root_ok(root) { return (); }
+    root
+}
+
+fn keep_restore(keep_paths, backup_root, schema) {
+    if backup_root == "" { return "No backup was available."; }
+    let restore_r = agent(
+        keep_restore_prompt(keep_paths, backup_root),
+        #{ label: "keep-restore", capability_mode: "execute", output_schema: schema }
+    );
+    let restore = agent_map(restore_r);
+    if restore == () || !map_bool(restore, "restored", false) {
+        return "Restore failed. Original bytes are in " + backup_root + ".";
+    }
+    "Restored kept paths from backup."
 }
 
 fn keep_guard(step, keep_paths, before_staged, before_works, schema) {
@@ -1028,7 +1230,7 @@ fn green_prompt(issue, plan, branch_name, keep_paths) {
     p += "Stay on branch_name. Edit only test_file and production_files. Do not delete the failing test.\n";
     p += "Run test_command exactly. Set green_proven true only when it exits 0. Put a short passing excerpt in pass_excerpt.\n";
     p += "When it fails, do not commit and set green_proven false.\n";
-    p += "When it passes, stage only those named paths. Commit with gt --no-interactive modify --commit -m. Use commit_type as the conventional prefix. Put Refs IDENTIFIER in the body. Do not write Fixes, Closes, or Resolves. Do not amend.\n";
+    p += "When it passes, stage only those named paths. Each staged path must be one literal file. Do not stage a directory, a glob, or a pathspec. Commit with gt --no-interactive modify --commit -m. Use commit_type as the conventional prefix. Put Refs IDENTIFIER in the body. Do not write Fixes, Closes, or Resolves. Do not amend.\n";
     p += packet_line(#{
         identifier: map_str(issue, "identifier"),
         branch_name: branch_name,
@@ -1085,7 +1287,7 @@ fn repair_prompt(issue, plan, branch_name, findings, file_limit, keep_paths) {
     p += keep_text(keep_paths);
     p += "Checkout branch_name with gt --no-interactive checkout. Edit only the files in the packet. Run test_command exactly.\n";
     p += "When it fails, do not commit. Set green_proven false.\n";
-    p += "When it passes, stage only those files and run gt --no-interactive modify --commit -m with a fix: message that contains Refs IDENTIFIER. Do not amend. Set green_proven true.\n";
+    p += "When it passes, stage only those files. Each staged path must be one literal file. Do not stage a directory, a glob, or a pathspec. Run gt --no-interactive modify --commit -m with a fix: message that contains Refs IDENTIFIER. Do not amend. Set green_proven true.\n";
     p += packet_line(#{
         identifier: map_str(issue, "identifier"),
         branch_name: branch_name,
@@ -1160,7 +1362,7 @@ fn bot_fix_prompt(issue, plan, branch_name, files, threads, keep_paths) {
     p += keep_text(keep_paths);
     p += "Checkout branch_name. Edit only the files in the packet. Run test_command exactly. This is the one fix attempt.\n";
     p += "When the test fails, do not commit. Set green_proven false.\n";
-    p += "When it passes, stage named paths only and gt --no-interactive modify --commit -m with a fix: message that contains Refs IDENTIFIER. Do not amend. Set green_proven true.\n";
+    p += "When it passes, stage named paths only. Each staged path must be one literal file. Do not stage a directory, a glob, or a pathspec. Run gt --no-interactive modify --commit -m with a fix: message that contains Refs IDENTIFIER. Do not amend. Set green_proven true.\n";
     p += packet_line(#{
         identifier: map_str(issue, "identifier"),
         branch_name: branch_name,
@@ -1286,6 +1488,25 @@ let verdict_schema = #{
     "properties": #{
         "accept": #{ "type": "boolean" },
         "evidence": #{ "type": "string" },
+    },
+};
+
+let keep_backup_schema = #{
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["backed_up", "backup_root"],
+    "properties": #{
+        "backed_up": #{ "type": "boolean" },
+        "backup_root": #{ "type": "string" },
+    },
+};
+
+let keep_restore_schema = #{
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["restored"],
+    "properties": #{
+        "restored": #{ "type": "boolean" },
     },
 };
 
@@ -1538,6 +1759,9 @@ while tries < MAX_TRIES && plan == () {
                             log("dropped " + prod.dropped.to_string() + " plan paths");
                         }
                         plan_out.production_files = prod.paths;
+                        if !plan_literals(plan_out) {
+                            plan_why = "Plan named a directory or pathspec, not a literal file.";
+                        } else {
                         let skeptic_r = agent(
                             plan_skeptic_prompt(candidate, plan_out, focus),
                             #{ label: "plan-skeptic:" + candidate_id, capability_mode: "read-only", output_schema: verdict_schema }
@@ -1553,6 +1777,7 @@ while tries < MAX_TRIES && plan == () {
                             plan = plan_out;
                             ready_evidence = map_str(eval_out, "evidence");
                             context_summary = map_str(context_out, "summary");
+                        }
                         }
                     }
                 }
@@ -1646,12 +1871,23 @@ if map_bool(dirty, "clean", false) {
     notes.push(note_row("implement", ignored));
 }
 let before_works = [];
+let backup_root = "";
 if keep_paths.len() != 0 {
     before_works = work_rows(map_get(dirty, "works"));
-    if before_works == () || keep_drift(keep_paths, map_get(entries, "staged"), before_works, dirty) != "" {
-        notes.push(note_row("implement", "Kept paths had no worktree snapshot. Nothing was edited."));
+    let snap = "unreadable";
+    if before_works != () {
+        snap = keep_drift(keep_paths, map_get(entries, "staged"), before_works, dirty);
+    }
+    if snap != "" {
+        notes.push(note_row("implement", keep_note(snap) + " Nothing was edited."));
         finish(notes);
     }
+    let backed = keep_backup(keep_paths, keep_backup_schema);
+    if backed == () || backed == "" {
+        notes.push(note_row("implement", "Could not back up kept paths. Nothing was edited."));
+        finish(notes);
+    }
+    backup_root = backed;
 }
 let red_r = agent(
     red_prompt(chosen, plan, branch_name, trunk, keep_paths),
@@ -1660,7 +1896,7 @@ let red_r = agent(
 let red = agent_map(red_r);
 let red_keep = keep_guard("red", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
 if red_keep != "" {
-    notes.push(note_row("implement", red_keep));
+    notes.push(note_row("implement", red_keep + " " + keep_restore(keep_paths, backup_root, keep_restore_schema)));
     finish(notes);
 }
 if red == () || !map_bool(red, "red_proven", false) {
@@ -1674,7 +1910,7 @@ let green_r = agent(
 let green = agent_map(green_r);
 let green_keep = keep_guard("green", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
 if green_keep != "" {
-    notes.push(note_row("implement", green_keep));
+    notes.push(note_row("implement", green_keep + " " + keep_restore(keep_paths, backup_root, keep_restore_schema)));
     finish(notes);
 }
 if green == () || !map_bool(green, "green_proven", false) {
@@ -1765,7 +2001,7 @@ if confirmed.len() > 0 {
     let repair = agent_map(repair_r);
     let repair_keep = keep_guard("repair", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
     if repair_keep != "" {
-        notes.push(note_row("fix", repair_keep));
+        notes.push(note_row("fix", repair_keep + " " + keep_restore(keep_paths, backup_root, keep_restore_schema)));
         finish(notes);
     }
     if repair == () || !map_bool(repair, "green_proven", false) {
@@ -1866,7 +2102,7 @@ if fixes.len() > 0 {
     let fix_out = agent_map(fix_r);
     let bot_keep = keep_guard("bot", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
     if bot_keep != "" {
-        notes.push(note_row("bots", bot_keep));
+        notes.push(note_row("bots", bot_keep + " " + keep_restore(keep_paths, backup_root, keep_restore_schema)));
         finish(notes);
     }
     if fix_out != () && map_bool(fix_out, "green_proven", false) {
