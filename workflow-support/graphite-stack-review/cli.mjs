@@ -18,8 +18,8 @@
  *   reply             Reply to a pull-request review comment
  *   resolve-thread    Resolve a review thread by GraphQL id
  *   rerun-run         Rerun a GitHub Actions run (failed jobs)
- *   lock-acquire      Acquire the per-repo lock
- *   lock-release      Release the per-repo lock
+ *   lock-acquire      Acquire the per-repo lock (--owner TOKEN)
+ *   lock-release      Release the per-repo lock (--owner TOKEN, or --force)
  *   restore           Checkout the original branch recorded at discover
  *   checkout          Checkout a named branch without fetching pr/<N>
  *   review-diff       Incremental git diff vs immediate parent
@@ -35,6 +35,8 @@ import {
   checkpointPath,
   classifyCheck,
   clampInt,
+  mergeStateBlocksReady,
+  initialPollShortcut,
   needsWorkFromLite,
   currentBranch,
   decodeJson,
@@ -139,8 +141,8 @@ Commands:
   reply             Reply to a review comment (--comment-id --body)
   resolve-thread    Resolve a review thread (--thread-id)
   rerun-run         Rerun a GitHub Actions run (--run-id [--failed])
-  lock-acquire      Acquire the per-repo lock
-  lock-release      Release the per-repo lock
+  lock-acquire      Acquire the per-repo lock (--owner TOKEN)
+  lock-release      Release the per-repo lock (--owner TOKEN, or --force)
   restore           Checkout the original branch recorded at discover
   checkout          Checkout a named branch without fetching pr/<N>
   review-diff       Incremental git diff vs immediate parent (read-only)
@@ -327,7 +329,7 @@ function cmdDiscover(flags) {
   const lockFile = lockPath(info.repo);
   let lock = { ok: true, skipped: true };
   if (!dryRun && flags.lock !== false) {
-    lock = acquireLock(lockFile);
+    lock = acquireLock(lockFile, undefined, lockOwner(flags));
     if (!lock.ok) {
       return {
         ok: false,
@@ -431,12 +433,14 @@ function cmdDiscover(flags) {
     last_discover_ms: nowMs(),
     dry_run: dryRun,
   };
-  if (!dryRun) saveCheckpoint(info.repo, startBranch, checkpoint);
-  writeJsonFile(path.join(stateDir(info.repo), "original.json"), {
-    branch: originalBranch,
-    git_root: info.git_root,
-    saved_at_ms: nowMs(),
-  });
+  if (!dryRun) {
+    saveCheckpoint(info.repo, startBranch, checkpoint);
+    writeJsonFile(path.join(stateDir(info.repo), "original.json"), {
+      branch: originalBranch,
+      git_root: info.git_root,
+      saved_at_ms: nowMs(),
+    });
+  }
 
   return {
     ok: true,
@@ -612,12 +616,13 @@ function normalizeThread(thread) {
 function summarizeChecks(rollup) {
   const checks = (rollup || []).map((c) => {
     const row = {
-      name: c.name || "",
+      name: c.name || c.context || "",
       state: c.state || "",
+      status: c.status || "",
       bucket: c.bucket || "",
       conclusion: c.conclusion || "",
-      link: c.link || c.detailsUrl || "",
-      workflow: c.workflow || "",
+      link: c.link || c.detailsUrl || c.targetUrl || "",
+      workflow: c.workflow || c.workflowName || "",
     };
     row.kind = classifyCheck(row);
     return row;
@@ -630,6 +635,8 @@ function summarizeChecks(rollup) {
 function mergeReadyFromParts({
   state,
   mergeable,
+  mergeStateStatus,
+  isDraft,
   ci,
   requestedChanges,
   unresolvedCount,
@@ -642,6 +649,7 @@ function mergeReadyFromParts({
       : Number(actionableUnresolvedCount);
   return (
     String(state) === "OPEN" &&
+    !mergeStateBlocksReady(mergeStateStatus, isDraft === true) &&
     String(mergeable) === "MERGEABLE" &&
     Number(ci.fail || 0) === 0 &&
     Number(ci.pending || 0) === 0 &&
@@ -704,6 +712,8 @@ function cmdPrState(flags) {
     const mergeReady = mergeReadyFromParts({
       state: pr.state,
       mergeable: pr.mergeable,
+      mergeStateStatus: pr.mergeStateStatus,
+      isDraft: pr.isDraft === true,
       ci,
       requestedChanges: requestedChanges.length,
       unresolvedCount: unresolved.length,
@@ -758,6 +768,19 @@ function cmdPrState(flags) {
   }
 
   const threadsRes = owner && name ? fetchThreads(cwd, owner, name, pr.number) : { ok: false, error: "no repo", threads: [] };
+  if (!threadsRes.ok) {
+    const threadError = threadsRes.error || "graphql reviewThreads failed";
+    return {
+      ok: false,
+      lite: false,
+      error: threadError,
+      repo: info.repo,
+      pr_number: pr.number,
+      head_sha: pr.headRefOid,
+      state: pr.state,
+      errors: { threads: threadError },
+    };
+  }
   const issueRes = fetchIssueComments(cwd, pr.number);
   const reviewRes = fetchReviewComments(cwd, pr.number);
   const threads = (threadsRes.threads || []).map(normalizeThread);
@@ -810,6 +833,8 @@ function cmdPrState(flags) {
   const mergeReady = mergeReadyFromParts({
     state: pr.state,
     mergeable: pr.mergeable,
+    mergeStateStatus: pr.mergeStateStatus,
+    isDraft: pr.isDraft === true,
     ci,
     requestedChanges: requestedChanges.length,
     unresolvedCount: unresolved.length,
@@ -883,8 +908,19 @@ function cmdPoll(flags) {
     last = cmdPrState(pollFlags);
     if (!last.ok) return { ...last, event: "error" };
     if (!baseline) baseline = last;
-    if (i === 0 && (last.merge_ready || last.needs_work === false)) {
-      return { ...last, event: "stable", waited_ms: 0 };
+    if (i === 0) {
+      const shortcut = initialPollShortcut(
+        pollEvent(last, last, expectedHead),
+        last.merge_ready,
+        last.needs_work,
+      );
+      if (shortcut) {
+        return {
+          ...last,
+          event: shortcut,
+          waited_ms: shortcut === "stable" ? 0 : nowMs() - started,
+        };
+      }
     }
     const event = pollEvent(baseline, last, expectedHead);
     if (event === "stable") {
@@ -993,19 +1029,28 @@ function cmdRerunRun(flags) {
   return { ok: true, action: "rerun-run", run_id: runId };
 }
 
+function lockOwner(flags) {
+  const raw = flags && flags.owner;
+  if (raw !== undefined && raw !== null && raw !== true && raw !== false) return String(raw);
+  return process.env.GRAPHITE_STACK_REVIEW_OWNER || "";
+}
+
 function cmdLockAcquire(flags) {
   const cwd = flags.cwd || process.cwd();
   const info = repoInfo(cwd);
   const filePath = lockPath(info.repo);
-  const lock = acquireLock(filePath);
-  return { ...lock, path: filePath, repo: info.repo };
+  const owner = lockOwner(flags);
+  const lock = acquireLock(filePath, undefined, owner);
+  return { ...lock, path: filePath, repo: info.repo, owner };
 }
 
 function cmdLockRelease(flags) {
   const cwd = flags.cwd || process.cwd();
   const info = repoInfo(cwd);
   const filePath = lockPath(info.repo);
-  return { ok: releaseLock(filePath), path: filePath, repo: info.repo };
+  const owner = lockOwner(flags);
+  const force = asBool(flags.force, false);
+  return { ok: releaseLock(filePath, owner, force), path: filePath, repo: info.repo, owner, force };
 }
 
 function cmdRestore(flags) {

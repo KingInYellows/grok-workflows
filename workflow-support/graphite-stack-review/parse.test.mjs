@@ -1,11 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
+  acquireLock,
   classifyCheck,
+  initialPollShortcut,
   isBotAuthor,
   isIgnorableCheck,
   isIgnorableDirtyPath,
   isPrSlashRef,
+  mergeStateBlocksReady,
   nonIgnorablePorcelainPaths,
   needsWorkFromLite,
   parseGtLogShort,
@@ -14,12 +20,14 @@ import {
   pickStartBranch,
   porcelainIsDirty,
   prNumberInRange,
+  releaseLock,
   summarizePorcelain,
   threadHasReply,
   walkStackFromState,
   wallClockFromCheckpoint,
   checkoutNamedBranch,
   reviewThreadPage,
+  writeJsonFile,
 } from "./lib.mjs";
 
 test("parseGtLogShort strips graph glyphs and restack annotations", () => {
@@ -253,4 +261,83 @@ test("parseOwnerRepo accepts ssh and https remotes", () => {
     parseOwnerRepo("https://github.com/Acme/widgets.git"),
     "Acme/widgets",
   );
+});
+
+test("queued and running CheckRuns are pending until they have a conclusion", () => {
+  for (const status of ["QUEUED", "IN_PROGRESS", "WAITING", "PENDING", "REQUESTED"]) {
+    assert.equal(classifyCheck({ name: "build", status }), "pending");
+  }
+  assert.equal(
+    classifyCheck({ name: "build", status: "COMPLETED", conclusion: "SUCCESS" }),
+    "pass",
+  );
+  assert.equal(
+    classifyCheck({ name: "build", status: "IN_PROGRESS", conclusion: "FAILURE" }),
+    "fail",
+  );
+  assert.equal(
+    classifyCheck({ name: "build", status: "COMPLETED", conclusion: "CANCELLED" }),
+    "transient",
+  );
+  assert.equal(isIgnorableCheck({ context: "Graphite / mergeability_check" }), true);
+  assert.equal(
+    classifyCheck({ context: "Graphite / mergeability_check", status: "IN_PROGRESS" }),
+    "ignored",
+  );
+});
+
+test("draft and blocked merge states are not merge-ready", () => {
+  assert.equal(mergeStateBlocksReady("BLOCKED", false), true);
+  assert.equal(mergeStateBlocksReady("DRAFT", false), true);
+  assert.equal(mergeStateBlocksReady("CLEAN", true), true);
+  assert.equal(mergeStateBlocksReady("CLEAN", false), false);
+  assert.equal(mergeStateBlocksReady("BEHIND", false), false);
+  assert.equal(mergeStateBlocksReady("", false), false);
+});
+
+test("first poll snapshot does not treat pending CI or a moved head as stable", () => {
+  assert.equal(initialPollShortcut("stable", true, false), "stable");
+  assert.equal(initialPollShortcut("stable", false, false), "stable");
+  assert.equal(initialPollShortcut("pending", false, false), "");
+  assert.equal(initialPollShortcut("head_changed", false, false), "head_changed");
+  assert.equal(initialPollShortcut("closed", true, false), "closed");
+  assert.equal(initialPollShortcut("stable", false, true), "");
+  assert.equal(initialPollShortcut("pending", false, true), "");
+});
+
+test("repo lock follows the owner token, not a dead CLI pid", () => {
+  const file = path.join(os.tmpdir(), `gsr-lock-${process.pid}-${Date.now()}.lock`);
+  fs.rmSync(file, { force: true });
+  try {
+    const first = acquireLock(file, 60_000, "run-a");
+    assert.equal(first.ok, true);
+    const again = acquireLock(file, 60_000, "run-a");
+    assert.equal(again.ok, true);
+    writeJsonFile(file, {
+      pid: 2147483646,
+      owner: "run-a",
+      started_at_ms: Date.now(),
+      host: "test",
+    });
+    const other = acquireLock(file, 60_000, "run-b");
+    assert.equal(other.ok, false);
+    assert.equal(releaseLock(file, "run-b", false), false);
+    assert.equal(fs.existsSync(file), true);
+    assert.equal(releaseLock(file, "run-a", false), true);
+    assert.equal(fs.existsSync(file), false);
+
+    writeJsonFile(file, {
+      pid: 2147483646,
+      owner: "run-a",
+      started_at_ms: Date.now() - 120_000,
+      host: "test",
+    });
+    const stale = acquireLock(file, 1_000, "run-b");
+    assert.equal(stale.ok, true);
+    assert.equal(releaseLock(file, "run-a", false), false);
+    assert.equal(releaseLock(file, "run-b", true), true);
+    assert.equal(fs.existsSync(file), false);
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
 });

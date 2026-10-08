@@ -287,10 +287,16 @@ export function writeJsonFile(filePath, value) {
   fs.renameSync(tmp, filePath);
 }
 
-export function acquireLock(filePath, staleMs = 6 * 60 * 60 * 1000) {
+export function acquireLock(
+  filePath,
+  staleMs = 6 * 60 * 60 * 1000,
+  owner = process.env.GRAPHITE_STACK_REVIEW_OWNER || "",
+) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const token = String(owner || "");
   const payload = {
     pid: process.pid,
+    owner: token,
     started_at_ms: nowMs(),
     host: os.hostname(),
   };
@@ -298,47 +304,46 @@ export function acquireLock(filePath, staleMs = 6 * 60 * 60 * 1000) {
     const fd = fs.openSync(filePath, "wx");
     fs.writeFileSync(fd, `${JSON.stringify(payload)}\n`);
     fs.closeSync(fd);
-    return { ok: true, stale: false };
+    return { ok: true, stale: false, owner: token };
   } catch (err) {
     if (!err || err.code !== "EEXIST") {
       return { ok: false, error: String(err && err.message ? err.message : err) };
     }
     const existing = readJsonFile(filePath, {});
     const age = nowMs() - Number(existing.started_at_ms || 0);
-    const pid = Number(existing.pid || 0);
-    const alive = pid > 0 && isPidAlive(pid);
-    if (!alive || age > staleMs) {
+    const sameOwner = Boolean(token) && existing.owner === token;
+    // A dead CLI pid is not stale. Each command exits immediately, so only
+    // age or the same owner token may take the lock.
+    if (sameOwner || age > staleMs) {
       try {
         fs.unlinkSync(filePath);
       } catch {
         // ignore
       }
-      return acquireLock(filePath, staleMs);
+      return acquireLock(filePath, staleMs, token);
     }
+    const heldBy = existing.owner ? String(existing.owner) : `pid ${Number(existing.pid || 0)}`;
     return {
       ok: false,
       locked: true,
-      error: `lock held by pid ${pid}`,
-      pid,
+      error: `lock held by ${heldBy}`,
+      owner: existing.owner || "",
+      pid: Number(existing.pid || 0),
       age_ms: age,
     };
   }
 }
 
-export function releaseLock(filePath) {
+export function releaseLock(
+  filePath,
+  owner = process.env.GRAPHITE_STACK_REVIEW_OWNER || "",
+  force = false,
+) {
   try {
     const existing = readJsonFile(filePath, {});
-    if (existing.pid && Number(existing.pid) !== process.pid) return false;
+    const token = String(owner || "");
+    if (!force && existing.owner && existing.owner !== token) return false;
     fs.unlinkSync(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function isPidAlive(pid) {
-  try {
-    process.kill(pid, 0);
     return true;
   } catch {
     return false;
@@ -561,12 +566,36 @@ export function isIgnorableCheck(check) {
   return false;
 }
 
+const PENDING_CHECK_STATUS = ["pending", "queued", "in_progress", "waiting", "requested"];
+
+export function mergeStateBlocksReady(mergeStateStatus, isDraft = false) {
+  if (isDraft === true) return true;
+  const status = String(mergeStateStatus || "");
+  return status === "BLOCKED" || status === "DRAFT";
+}
+
+// Zero-wait only when this snapshot is merge-ready or not needs_work and the
+// poll event agrees. Pending CI, a moved head, and a closed PR must not skip
+// the loop. A stable event while needs_work is still true stays on the settle path.
+export function initialPollShortcut(early, mergeReady, needsWork) {
+  if (!(mergeReady || needsWork === false)) return "";
+  if (early === "stable") return "stable";
+  if (early && early !== "pending") return early;
+  return "";
+}
+
 export function classifyCheck(check) {
   if (isIgnorableCheck(check)) return "ignored";
   const bucket = String(check.bucket || "").toLowerCase();
+  const status = String(check.status || "").toLowerCase();
+  const conclusion = String(check.conclusion || "").toLowerCase();
   const state = String(check.state || check.conclusion || "").toLowerCase();
   if (bucket === "fail" || ["failure", "error", "failed"].includes(state)) return "fail";
-  if (bucket === "pending" || ["pending", "queued", "in_progress", "expected"].includes(state)) {
+  if (!conclusion && PENDING_CHECK_STATUS.includes(status)) return "pending";
+  if (
+    bucket === "pending" ||
+    ["pending", "queued", "in_progress", "expected", "waiting", "requested"].includes(state)
+  ) {
     return "pending";
   }
   if (bucket === "cancel" || ["cancelled", "canceled", "timed_out", "startup_failure", "stale"].includes(state)) {
