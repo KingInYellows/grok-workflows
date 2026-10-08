@@ -556,14 +556,23 @@ fn self_check() {
     if keep_note("restored") != "A kept path was restored or dropped." { return "keep note restored"; }
     if keep_note("unreadable") != "Could not recheck kept paths." { return "keep note unreadable"; }
     if keep_note("") != "" { return "keep note empty"; }
-    if !backup_root_ok("/repo/.git/ship-next-issue-keep") { return "backup root"; }
-    if backup_root_ok("repo/.git/ship-next-issue-keep") { return "backup relative"; }
-    if backup_root_ok("/repo/ship-next-issue-keep") { return "backup not git"; }
-    if backup_root_ok("/repo/.git/../ship-next-issue-keep") { return "backup dotdot"; }
-    if !keep_backup_prompt([".gitignore"]).contains("ship-next-issue-keep") { return "backup prompt"; }
+    if !backup_root_ok("/repo/.git/ship-next-issue-keep.Ab12Cd34") { return "backup root"; }
+    if !backup_root_ok("/repo/.git/worktrees/wt/ship-next-issue-keep.Ab12Cd34") { return "backup worktree"; }
+    if backup_root_ok("/repo/.git/ship-next-issue-keep") { return "backup reused"; }
+    if backup_root_ok("/repo/.git/ship-next-issue-keep.") { return "backup empty token"; }
+    if backup_root_ok("/repo/.git/ship-next-issue-keep.ab") { return "backup short token"; }
+    if backup_root_ok("/repo/.git/worktrees/wt/ship-next-issue-keep.Ab12Cd34/extra") { return "backup nested"; }
+    if backup_root_ok("repo/.git/ship-next-issue-keep.Ab12Cd34") { return "backup relative"; }
+    if backup_root_ok("/repo/ship-next-issue-keep.Ab12Cd34") { return "backup not git"; }
+    if backup_root_ok("/repo/.git/../ship-next-issue-keep.Ab12Cd34") { return "backup dotdot"; }
+    if !keep_backup_prompt([".gitignore"]).contains("mktemp -d") { return "backup fresh"; }
+    if !keep_backup_prompt([".gitignore"]).contains("path.index") { return "backup index"; }
     if !keep_backup_prompt([".gitignore"]).contains("Do not edit") { return "backup prompt edit"; }
     if !keep_backup_prompt([".gitignore"]).contains("backed_up false") { return "backup dirty dir"; }
-    if !keep_restore_prompt([".gitignore"], "/repo/.git/ship-next-issue-keep").contains(".gitignore") { return "restore prompt"; }
+    let restore_prompt = keep_restore_prompt([".gitignore"], "/repo/.git/ship-next-issue-keep.Ab12Cd34");
+    if !restore_prompt.contains(".gitignore") { return "restore prompt"; }
+    if !restore_prompt.contains("update-index --index-info") { return "restore index"; }
+    if !restore_prompt.contains("backup_root/path and backup_root/path.absent") { return "restore stale marker"; }
     ""
 }
 
@@ -1081,7 +1090,7 @@ fn keep_text(paths) {
         p += json_encode(path);
     }
     p += "\nThe test file and production files are expected once this step changes them. Any other path in git status --porcelain --untracked-files=no means stop and set the proof flag false.\n";
-    p += "The script stores each of these paths' index column and worktree hash. It copies them into the git directory before editing and copies them back if a later step changes one.\n";
+    p += "The script stores each of these paths' index column and worktree hash. It copies them into a new git-directory backup before editing. If a later step changes one, it copies the bytes back and puts the saved index line back.\n";
     p
 }
 
@@ -1110,13 +1119,14 @@ fn keep_backup_prompt(keep_paths) {
     let p = "You copy kept paths into the git directory. Do not edit, stage, restore, commit, or submit any worktree file.\n";
     p += guardrails_text();
     p += tools_exec();
-    p += "Run git rev-parse --absolute-git-dir. backup_root is that absolute directory plus /ship-next-issue-keep. Create that directory only.\n";
-    p += "For each path in the packet, leave the worktree unchanged.\n";
+    p += "Run git rev-parse --absolute-git-dir. Create a new empty directory with mktemp -d. The template is that absolute directory plus /ship-next-issue-keep.XXXXXXXX. backup_root is the directory mktemp prints. Do not reuse a directory named ship-next-issue-keep or any directory that already has files.\n";
+    p += "For each path in the packet, leave the worktree unchanged. Write only one of path, path.absent, or path.submodule, and always write path.index.\n";
     p += "When the path is a regular file or symlink, copy it to backup_root/path and create parent directories under backup_root only.\n";
     p += "When the path is missing from the worktree, write an empty marker at backup_root/path.absent. Do not create the worktree path.\n";
     p += "When the path is a directory and git -C path status --porcelain is not empty, or git -C path rev-parse HEAD fails, set backed_up false. Do not copy the directory.\n";
     p += "When the path is a directory and that status is empty, write one line to backup_root/path.submodule and do not copy the directory. The line is sub: plus the lowercase hex from git -C path rev-parse HEAD, then :clean. Do not run git stash, checkout, reset, or clean.\n";
-    p += "Set backed_up true only when every path was copied or marked and no directory was dirty. Set backup_root to that absolute directory. It must end with /ship-next-issue-keep and contain /.git/.\n";
+    p += "Run git ls-files -s -- path. Write that single line to backup_root/path.index. When ls-files prints nothing, write an empty path.index.\n";
+    p += "Set backed_up true only when every path was copied or marked, every path.index was written, and no directory was dirty. Set backup_root to the new absolute directory. Its last component must be ship-next-issue-keep. plus only letters and digits, and the path must contain /.git/.\n";
     p += packet_line(#{ keep_paths: keep_paths });
     p
 }
@@ -1126,12 +1136,37 @@ fn keep_restore_prompt(keep_paths, backup_root) {
     p += guardrails_text();
     p += tools_exec();
     p += "Touch only the paths in the packet.\n";
-    p += "When backup_root/path exists, copy it onto the worktree path and replace the worktree bytes.\n";
-    p += "When backup_root/path.absent exists, remove the worktree path if it exists.\n";
+    p += "When backup_root/path and backup_root/path.absent both exist, set restored false. Do not remove the worktree path.\n";
+    p += "When only backup_root/path exists, copy it onto the worktree path and replace the worktree bytes.\n";
+    p += "When only backup_root/path.absent exists, remove the worktree path if it exists.\n";
     p += "When backup_root/path.submodule exists, read its one line. When the line ends with :clean, run git -C path checkout of the hex between sub: and :clean. When it ends with :dirty, do not checkout and set restored false.\n";
-    p += "Set restored true only when every path matches its backup marker.\n";
+    p += "Then put the saved index back for that path only. When backup_root/path.index has a line, pass that line to git update-index --index-info. When path.index is empty, run git rm --cached --ignore-unmatch -- path. Do not change any other index path. Do not commit, amend, or reset --hard.\n";
+    p += "Set restored true only when every worktree path matches its backup marker and git ls-files -s -- path matches path.index.\n";
     p += packet_line(#{ keep_paths: keep_paths, backup_root: backup_root });
     p
+}
+
+fn last_segment(path) {
+    let i = path.len();
+    while i > 0 {
+        i -= 1;
+        if path.sub_string(i, 1) == "/" {
+            return path.sub_string(i + 1, path.len() - (i + 1));
+        }
+    }
+    path
+}
+
+fn backup_token_ok(token) {
+    if token.len() < 6 || token.len() > 32 { return false; }
+    let i = 0;
+    while i < token.len() {
+        let ch = token.sub_string(i, 1);
+        let ok = (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9");
+        if !ok { return false; }
+        i += 1;
+    }
+    true
 }
 
 fn backup_root_ok(path) {
@@ -1140,9 +1175,11 @@ fn backup_root_ok(path) {
     if p == "" || p.sub_string(0, 1) != "/" { return false; }
     if p.contains("..") || control_path(p) { return false; }
     if !p.contains("/.git/") { return false; }
-    let suffix = "/ship-next-issue-keep";
-    if p.len() <= suffix.len() { return false; }
-    p.sub_string(p.len() - suffix.len(), suffix.len()) == suffix
+    let name = last_segment(p);
+    let prefix = "ship-next-issue-keep.";
+    if name.len() <= prefix.len() { return false; }
+    if name.sub_string(0, prefix.len()) != prefix { return false; }
+    backup_token_ok(name.sub_string(prefix.len(), name.len() - prefix.len()))
 }
 
 fn keep_backup(keep_paths, schema) {
