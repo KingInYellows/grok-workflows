@@ -1,0 +1,18 @@
+workflow-support/graphite-stack-review/cli.mjs
+  h_6000354274ce50 21-22,38-39,144-145,332,436-443,619,621,624-625,638-639,652,715-716,771-783,836-837,911-923,1032-1037,1042-1044,1051-1053
+workflow-support/graphite-stack-review/lib.mjs
+  h_6000354274ce50 290-294,296,299,307,314-317,323,325,329-331,337-341,344-345,569-586,590-591,594-598
+workflow-support/graphite-stack-review/parse.test.mjs
+  h_6000354274ce50 3-5,7,9,14,23,30,265-343
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "342bf1594fbbaf20123d96c1e0f765ad8886d1c6",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
