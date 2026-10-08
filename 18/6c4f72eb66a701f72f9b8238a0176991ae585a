@@ -1,0 +1,19 @@
+goal-execute.rhai
+  s_9c80735a3f6938::t_b049495493c267 367-382,446-516,518-582,586-664,666-667,669-676,678-682,685,687-739,741-742,752-755,759
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "186c4f72eb66a701f72f9b8238a0176991ae585a",
+  "prompts": {},
+  "sessions": {
+    "s_9c80735a3f6938": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf0283f5-900c-4608-a2b8-c48fc4497a68",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
