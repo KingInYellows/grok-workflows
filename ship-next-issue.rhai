@@ -370,6 +370,13 @@ fn pick_issue(rows, only_issue, skip_ids) {
     best
 }
 
+fn cycle_pool_exhausted(pool_name, only_issue, cycle_truncated, active, skip_ids) {
+    if pool_name != "cycle" { return false; }
+    if only_issue != "" { return false; }
+    if cycle_truncated { return false; }
+    pick_issue(active, "", skip_ids) == ()
+}
+
 fn branch_for(identifier) {
     let raw = trimmed(identifier);
     let out = "";
@@ -667,6 +674,29 @@ fn self_check() {
     if !restore_prompt.contains(".gitignore") { return "restore prompt"; }
     if !restore_prompt.contains("update-index --index-info") { return "restore index"; }
     if !restore_prompt.contains("backup_root/path and backup_root/path.absent") { return "restore stale marker"; }
+    let eight = [];
+    let eight_ids = [];
+    let n = 0;
+    let ident = "";
+    while n < 8 {
+        ident = "EX-" + n.to_string();
+        eight.push(#{
+            identifier: ident, title: "Row", priority: 3,
+            status_type: "started", labels: [], blocked_by: [],
+        });
+        eight_ids.push(ident);
+        n += 1;
+    }
+    if !cycle_pool_exhausted("cycle", "", false, eight, eight_ids) { return "fallback after cap"; }
+    if cycle_pool_exhausted("cycle", "", false, eight, ["EX-0"]) { return "fallback while remaining"; }
+    if cycle_pool_exhausted("cycle", "", true, eight, eight_ids) { return "fallback while truncated"; }
+    if cycle_pool_exhausted("cycle", "EX-1", false, eight, eight_ids) { return "fallback named"; }
+    if cycle_pool_exhausted("fallback", "", false, eight, eight_ids) { return "fallback twice"; }
+    let listed = select_prompt("", "", 50);
+    if listed.contains("Stop when cycle_candidates has") { return "pool stops early"; }
+    if !listed.contains("Do not fill the pool from started issues and then stop") { return "pool started cap"; }
+    if !listed.contains("fallback_candidates the same way") { return "fallback paging"; }
+    if !listed.contains("Do not truncate labels or blocked_by") { return "row arrays"; }
     ""
 }
 
@@ -679,16 +709,16 @@ fn select_prompt(only_issue, team_override, pool_cap) {
     p += "2. Call linear__list_teams. When team_override is non-empty, match that team name or key. Otherwise match the team whose name or key equals the repo name, ignoring ASCII case. Set team_match_count. When it is not 1, set ok false and return empty cycle_candidates and fallback_candidates.\n";
     p += "3. When only_issue is non-empty, fetch that one issue with linear__get_issue or linear__list_issues. Do not require it to be in the current cycle. Put it in cycle_candidates. Leave fallback_candidates empty. Set cycle_ok true, cycle_truncated false, and fallback_truncated false. Skip steps 4 through 6.\n";
     p += "4. Otherwise call linear__list_cycles with the team id from list_teams and type current. The cycle list rejects a team name. When there is no current cycle, set cycle_ok false, leave cycle_candidates empty, and set cycle_truncated false. Do not set ok false only because the cycle is missing.\n";
-    p += "5. When a current cycle exists, fill cycle_candidates by calling linear__list_issues three times, with state started, then unstarted, then backlog. Pass the team and that cycle. Pass limit ";
+    p += "5. When a current cycle exists, read linear__list_issues for state started, then unstarted, then backlog. Pass the team and that cycle. Pass limit ";
     p += pool_cap.to_string();
-    p += ". When hasNextPage is true, call again with cursor. Stop when cycle_candidates has ";
+    p += " on every call. Follow cursor while hasNextPage is true. Do not fill the pool from started issues and then stop. An agent-ready issue outranks status, so page later states before keeping a non-ready started issue. Stop paging only after every state has hasNextPage false, or after you have already kept ";
     p += pool_cap.to_string();
-    p += " issues. Set cycle_truncated true if any call still has hasNextPage, or if the pool reached the cap before started, unstarted, and backlog were all read. Otherwise set cycle_truncated false. Set cycle_ok true when the current cycle was read.\n";
-    p += "6. Then fill fallback_candidates with the same three state calls and the same paging, for the team, with no cycle argument. Remove any identifier already in cycle_candidates. Stop at ";
+    p += " agent-ready issues, because nothing unread can outrank a full agent-ready pool. From the rows you read, keep agent-ready issues first in status order started, unstarted, then backlog, then non-ready issues in that same status order, until ";
     p += pool_cap.to_string();
-    p += " issues. Set fallback_truncated true if any call still has hasNextPage, or if the pool reached the cap before started, unstarted, and backlog were all read. Otherwise set fallback_truncated false.\n";
-    p += "7. Open means status type started, unstarted, or backlog. Keep needs-owner, epics, and blocked issues in the arrays. The script drops them. Do not call get_issue for every row. Do not sort.\n";
-    p += "8. Each issue needs identifier, url, title, priority, status_type, labels, and blocked_by. priority is the integer value. blocked_by entries need identifier and status_type. Leave blocked_by empty when the list payload has no relations. labels is an array of name strings.\n";
+    p += " issues. Set cycle_truncated true when any issue was left out. Otherwise set cycle_truncated false. Set cycle_ok true when the current cycle was read.\n";
+    p += "6. Then fill fallback_candidates the same way, for the team, with no cycle argument. Remove any identifier already in cycle_candidates before the cap. Set fallback_truncated true when any team issue outside the cycle was left out. Otherwise set fallback_truncated false.\n";
+    p += "7. Open means status type started, unstarted, or backlog. Keep needs-owner, epics, and blocked issues in the arrays. The script drops them and ranks agent-ready ahead of status. Do not call get_issue for every row. Array order does not matter.\n";
+    p += "8. Each issue needs identifier, url, title, priority, status_type, labels, and blocked_by. priority is the integer value. blocked_by entries need identifier and status_type. Leave blocked_by empty when the list payload has no relations. labels is every label name. blocked_by is every blocker. Do not truncate labels or blocked_by.\n";
     p += "9. Set ok true only when trunk is non-empty and team_match_count is 1. Put the failure in error.\n";
     p += packet_line(#{ only_issue: only_issue, team_override: team_override });
     p
@@ -1553,10 +1583,9 @@ let issue_row_schema = #{
         "title": #{ "type": "string" },
         "priority": #{ "type": "integer" },
         "status_type": #{ "type": "string" },
-        "labels": #{ "type": "array", "maxItems": 12, "items": #{ "type": "string" } },
+        "labels": #{ "type": "array", "items": #{ "type": "string" } },
         "blocked_by": #{
             "type": "array",
-            "maxItems": 8,
             "items": #{
                 "type": "object",
                 "additionalProperties": false,
@@ -1800,6 +1829,10 @@ let schema_text = json_encode(select_schema);
 if !schema_text.contains("cycle_candidates") || !schema_text.contains("fallback_candidates") || !schema_text.contains("blocked_by") {
     pause("verification", "select schema did not encode both pools");
 }
+let row_text = json_encode(issue_row_schema);
+if row_text.contains("maxItems") {
+    pause("verification", "issue row schema caps labels or blockers");
+}
 
 let only_issue = "";
 let team_override = "";
@@ -1866,32 +1899,33 @@ for item in cycle_drops {
     notes.push(note_row("skip", id + " " + reason));
     skip_ids.push(id);
 }
-while tries < MAX_TRIES && plan == () {
+while plan == () {
+    if cycle_pool_exhausted(pool_name, only_issue, cycle_truncated, active, skip_ids) {
+        let fallback_class = classify_pool(fallback_rows, "", skip_ids);
+        fallback_drops = fallback_class.drops;
+        fallback_eligible_n = fallback_class.eligible.len();
+        for item in fallback_drops {
+            let id = map_str(item, "identifier");
+            let reason = map_str(item, "reason");
+            log(id + " skipped: " + reason);
+            notes.push(note_row("skip", id + " " + reason));
+            skip_ids.push(id);
+        }
+        active = fallback_class.eligible;
+        searched_fallback = true;
+        pool_name = "fallback";
+        log("cycle pool exhausted; searching the rest of the team");
+        if pick_issue(active, only_issue, skip_ids) == () {
+            break;
+        }
+        tries = 0;
+    }
+    if tries >= MAX_TRIES {
+        break;
+    }
     let candidate = pick_issue(active, only_issue, skip_ids);
     if candidate == () {
-        let moved = false;
-        if pool_name == "cycle" && only_issue == "" && !cycle_truncated {
-            let fallback_class = classify_pool(fallback_rows, "", skip_ids);
-            fallback_drops = fallback_class.drops;
-            fallback_eligible_n = fallback_class.eligible.len();
-            for item in fallback_drops {
-                let id = map_str(item, "identifier");
-                let reason = map_str(item, "reason");
-                log(id + " skipped: " + reason);
-                notes.push(note_row("skip", id + " " + reason));
-                skip_ids.push(id);
-            }
-            active = fallback_class.eligible;
-            searched_fallback = true;
-            pool_name = "fallback";
-            log("cycle pool exhausted; searching the rest of the team");
-            moved = true;
-        }
-        if !moved || pick_issue(active, only_issue, skip_ids) == () {
-            tries = MAX_TRIES;
-        } else {
-            tries = -1;
-        }
+        break;
     } else {
         let candidate_id = map_str(candidate, "identifier");
         phase("Evaluate");
