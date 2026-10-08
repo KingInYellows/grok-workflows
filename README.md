@@ -51,6 +51,7 @@ cd ~/projects/grok-workflows
 ./sync-workflows.sh            # copy *.rhai into WSL + Windows grok homes
 ./sync-workflows.sh --dry-run  # show what would change
 ./sync-workflows.sh --prune    # also delete dest *.rhai files not in this repo
+./scripts/verify.sh            # check the in-repo Graphite monitor CLI
 ```
 
 From Windows PowerShell:

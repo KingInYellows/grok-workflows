@@ -113,7 +113,7 @@ fn packet_line(m) {
 }
 
 fn support_cli() {
-    "$HOME/.grok/workflow-support/graphite-stack-review/cli.mjs"
+    "$HOME/projects/grok-workflows/workflow-support/graphite-stack-review/cli.mjs"
 }
 
 fn is_canned(m) {

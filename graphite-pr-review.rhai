@@ -24,7 +24,7 @@ const MAX_DIFF_CHARS = 16000;
 const MAX_AGENTS_CHARS = 8000;
 
 fn support_cli() {
-    "$HOME/.grok/workflow-support/graphite-stack-review/cli.mjs"
+    "$HOME/projects/grok-workflows/workflow-support/graphite-stack-review/cli.mjs"
 }
 
 fn trimmed(s) {
