@@ -358,6 +358,10 @@ fn self_check() {
     if runnable_product_command("$(UNKNOWN)") { return "substitution UNKNOWN accepted"; }
     if runnable_product_command("UNKNOWN|tee") { return "glued pipe accepted"; }
     if runnable_product_command("${UNKNOWN}") != true { return "variable command rejected"; }
+    if runnable_product_command("echo \"ready|UNKNOWN\"") != true { return "quoted pipe rejected"; }
+    if runnable_product_command("echo 'ok|UNKNOWN'") != true { return "single quoted pipe rejected"; }
+    if runnable_product_command("echo ok | UNKNOWN") { return "pipe UNKNOWN accepted"; }
+    if runnable_product_command("echo ok | PATH=\".venv/bin:$PATH\" UNKNOWN --flag") { return "env pipe UNKNOWN accepted"; }
     ""
 }
 
@@ -401,24 +405,49 @@ fn trim_command_token(s) {
     t
 }
 
+fn shell_quote_after(quote, escape, ch) {
+    if escape == true {
+        return #{ quote: quote, escape: false };
+    }
+    if quote == "'" {
+        if ch == "'" { return #{ quote: "", escape: false }; }
+        return #{ quote: quote, escape: false };
+    }
+    if quote == "\"" {
+        if ch == "\\" { return #{ quote: quote, escape: true }; }
+        if ch == "\"" { return #{ quote: "", escape: false }; }
+        return #{ quote: quote, escape: false };
+    }
+    if ch == "\\" { return #{ quote: "", escape: true }; }
+    if ch == "'" || ch == "\"" { return #{ quote: ch, escape: false }; }
+    #{ quote: "", escape: false }
+}
+
 fn has_unknown_shell_word(text) {
     if type_of(text) != "string" || text == "" { return false; }
     let n = text.len();
     let i = 0;
     let word = "";
+    let quote = "";
+    let escape = false;
     while i <= n {
         let at_end = i == n;
         let ch = "";
         if at_end != true { ch = text.sub_string(i, 1); }
         let break_word = at_end;
-        if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" || ch == ">" || ch == "<" {
-            break_word = true;
+        if at_end != true && escape != true && quote == "" {
+            if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" || ch == ">" || ch == "<" {
+                break_word = true;
+            }
         }
         if break_word == true {
             if trim_command_token(word) == "UNKNOWN" { return true; }
             word = "";
         } else {
             word += ch;
+            let stepped = shell_quote_after(quote, escape, ch);
+            quote = stepped.quote;
+            escape = stepped.escape;
         }
         if at_end { break; }
         i += 1;

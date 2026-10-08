@@ -603,24 +603,49 @@ fn trim_command_token(s) {
     t
 }
 
+fn shell_quote_after(quote, escape, ch) {
+    if escape == true {
+        return #{ quote: quote, escape: false };
+    }
+    if quote == "'" {
+        if ch == "'" { return #{ quote: "", escape: false }; }
+        return #{ quote: quote, escape: false };
+    }
+    if quote == "\"" {
+        if ch == "\\" { return #{ quote: quote, escape: true }; }
+        if ch == "\"" { return #{ quote: "", escape: false }; }
+        return #{ quote: quote, escape: false };
+    }
+    if ch == "\\" { return #{ quote: "", escape: true }; }
+    if ch == "'" || ch == "\"" { return #{ quote: ch, escape: false }; }
+    #{ quote: "", escape: false }
+}
+
 fn has_unknown_shell_word(text) {
     if type_of(text) != "string" || text == "" { return false; }
     let n = text.len();
     let i = 0;
     let word = "";
+    let quote = "";
+    let escape = false;
     while i <= n {
         let at_end = i == n;
         let ch = "";
         if at_end != true { ch = text.sub_string(i, 1); }
         let break_word = at_end;
-        if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" || ch == ">" || ch == "<" {
-            break_word = true;
+        if at_end != true && escape != true && quote == "" {
+            if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" || ch == ">" || ch == "<" {
+                break_word = true;
+            }
         }
         if break_word == true {
             if trim_command_token(word) == "UNKNOWN" { return true; }
             word = "";
         } else {
             word += ch;
+            let stepped = shell_quote_after(quote, escape, ch);
+            quote = stepped.quote;
+            escape = stepped.escape;
         }
         if at_end { break; }
         i += 1;
@@ -659,17 +684,24 @@ fn segment_command_unknown(text) {
     let n = text.len();
     let i = 0;
     let segment = "";
+    let quote = "";
+    let escape = false;
     while i <= n {
         let at_end = i == n;
         let ch = "";
         if at_end != true { ch = text.sub_string(i, 1); }
         let break_seg = at_end;
-        if ch == "|" || ch == "&" || ch == ";" { break_seg = true; }
+        if at_end != true && escape != true && quote == "" {
+            if ch == "|" || ch == "&" || ch == ";" { break_seg = true; }
+        }
         if break_seg == true {
             if first_shell_word(segment) == "UNKNOWN" { return true; }
             segment = "";
         } else {
             segment += ch;
+            let stepped = shell_quote_after(quote, escape, ch);
+            quote = stepped.quote;
+            escape = stepped.escape;
         }
         if at_end { break; }
         i += 1;
@@ -825,6 +857,12 @@ fn self_check() {
     if publishes_unknown_command("UNKNOWN || pytest\n") != true { return "leading or UNKNOWN missed"; }
     if publishes_unknown_command("UNKNOWN\r\n") != true { return "cr UNKNOWN missed"; }
     if publishes_unknown_command("Product command: UNKNOWN\r\n") != true { return "cr product missed"; }
+    if publishes_unknown_command("{\n  echo \"ready|UNKNOWN\"\n}\n") { return "quoted pipe looked unknown"; }
+    if publishes_unknown_command("{\n  echo 'ok|UNKNOWN'\n}\n") { return "single quoted pipe looked unknown"; }
+    if publishes_unknown_command("{\n  echo \"ready|UNKNOWN\" | UNKNOWN\n}\n") != true { return "quoted then pipe UNKNOWN missed"; }
+    if publishes_unknown_command("{\n  echo ok | UNKNOWN\n}\n") != true { return "bare pipe UNKNOWN missed"; }
+    if publishes_unknown_command("Product command: echo \"ready|UNKNOWN\"\n") { return "quoted product pipe looked unknown"; }
+    if publishes_unknown_command("Product command: echo 'ok|UNKNOWN'\n") { return "single quoted product pipe looked unknown"; }
     ""
 }
 
