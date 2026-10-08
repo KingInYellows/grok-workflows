@@ -1,0 +1,19 @@
+goal-planning.rhai
+  s_9c80735a3f6938::t_35c457aaeee1fc 682-730,747,915-916
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e804a1322f3317be1b1dd5cc24a634da6ff4455a",
+  "prompts": {},
+  "sessions": {
+    "s_9c80735a3f6938": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf0283f5-900c-4608-a2b8-c48fc4497a68",
+        "model": "claude-sonnet-5-5"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
