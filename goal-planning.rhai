@@ -679,6 +679,55 @@ fn first_shell_word(text) {
     ""
 }
 
+fn is_env_assignment(word) {
+    if type_of(word) != "string" { return false; }
+    let n = word.len();
+    if n < 2 { return false; }
+    let i = 0;
+    let saw_name = false;
+    while i < n {
+        let ch = word.sub_string(i, 1);
+        if ch == "=" { return saw_name; }
+        let ok = ch == "_";
+        if ch >= "A" && ch <= "Z" { ok = true; }
+        if ch >= "a" && ch <= "z" { ok = true; }
+        if saw_name == true && ch >= "0" && ch <= "9" { ok = true; }
+        if ok != true { return false; }
+        saw_name = true;
+        i += 1;
+    }
+    false
+}
+
+fn segment_leads_unknown(segment) {
+    if type_of(segment) != "string" || segment == "" { return false; }
+    let n = segment.len();
+    let i = 0;
+    let word = "";
+    while i <= n {
+        let at_end = i == n;
+        let ch = "";
+        if at_end != true { ch = segment.sub_string(i, 1); }
+        let break_word = at_end;
+        if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" || ch == ">" || ch == "<" {
+            break_word = true;
+        }
+        if break_word == true {
+            if word != "" {
+                if is_env_assignment(word) != true {
+                    return trim_command_token(word) == "UNKNOWN";
+                }
+                word = "";
+            }
+        } else {
+            word += ch;
+        }
+        if at_end { break; }
+        i += 1;
+    }
+    false
+}
+
 fn segment_command_unknown(text) {
     if type_of(text) != "string" || text == "" { return false; }
     let n = text.len();
@@ -695,7 +744,7 @@ fn segment_command_unknown(text) {
             if ch == "|" || ch == "&" || ch == ";" { break_seg = true; }
         }
         if break_seg == true {
-            if first_shell_word(segment) == "UNKNOWN" { return true; }
+            if segment_leads_unknown(segment) { return true; }
             segment = "";
         } else {
             segment += ch;
@@ -863,6 +912,8 @@ fn self_check() {
     if publishes_unknown_command("{\n  echo ok | UNKNOWN\n}\n") != true { return "bare pipe UNKNOWN missed"; }
     if publishes_unknown_command("Product command: echo \"ready|UNKNOWN\"\n") { return "quoted product pipe looked unknown"; }
     if publishes_unknown_command("Product command: echo 'ok|UNKNOWN'\n") { return "single quoted product pipe looked unknown"; }
+    if publishes_unknown_command("{\n  echo ok | PATH=\".venv/bin:$PATH\" UNKNOWN --flag\n}\n") != true { return "env pipe UNKNOWN missed"; }
+    if publishes_unknown_command("{\n  echo ok | PATH=\".venv/bin:$PATH\" pytest -q\n}\n") { return "env pipe pytest looked unknown"; }
     ""
 }
 
