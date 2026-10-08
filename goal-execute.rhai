@@ -380,6 +380,26 @@ fn self_check() {
     if runnable_product_command("echo -c \"UNKNOWN\"") != true { return "echo -c rejected"; }
     if runnable_product_command("( UNKNOWN --flag )") { return "subshell UNKNOWN accepted"; }
     if runnable_product_command("( pytest -q )") != true { return "subshell pytest rejected"; }
+    if runnable_product_command("env UNKNOWN") { return "env UNKNOWN accepted"; }
+    if runnable_product_command("env FOO=1 UNKNOWN") { return "env assign UNKNOWN accepted"; }
+    if runnable_product_command("env -i UNKNOWN") { return "env opt UNKNOWN accepted"; }
+    if runnable_product_command("/usr/bin/env UNKNOWN") { return "path env UNKNOWN accepted"; }
+    if runnable_product_command("env pytest -q") != true { return "env pytest rejected"; }
+    if runnable_product_command("env FOO=1 pytest -q") != true { return "env assign pytest rejected"; }
+    if runnable_product_command("env echo UNKNOWN") != true { return "env echo rejected"; }
+    if runnable_product_command("/bin/sh -c \"UNKNOWN --flag\"") { return "path sh -c accepted"; }
+    if runnable_product_command("/usr/bin/bash -c 'UNKNOWN'") { return "path bash -c accepted"; }
+    if runnable_product_command("/bin/sh -c \"echo UNKNOWN\"") != true { return "path sh echo rejected"; }
+    if runnable_product_command(">log UNKNOWN --flag") { return "redirect UNKNOWN accepted"; }
+    if runnable_product_command("> log UNKNOWN") { return "spaced redirect UNKNOWN accepted"; }
+    if runnable_product_command("<log UNKNOWN") { return "input redirect UNKNOWN accepted"; }
+    if runnable_product_command(">>log UNKNOWN") { return "append UNKNOWN accepted"; }
+    if runnable_product_command("2>log UNKNOWN") { return "fd redirect UNKNOWN accepted"; }
+    if runnable_product_command("echo ok > UNKNOWN") != true { return "echo redirect rejected"; }
+    if runnable_product_command("pytest -q >log") != true { return "pytest redirect rejected"; }
+    if runnable_product_command(">$(UNKNOWN)") { return "redirect sub accepted"; }
+    if runnable_product_command("echo $((1+$(UNKNOWN)))") { return "arith sub accepted"; }
+    if runnable_product_command("echo $((1+$(echo UNKNOWN)))") != true { return "arith echo sub rejected"; }
     ""
 }
 
@@ -463,8 +483,21 @@ fn is_env_assignment(word) {
     false
 }
 
+fn command_basename(token) {
+    if type_of(token) != "string" || token == "" { return ""; }
+    let i = token.len();
+    while i > 0 {
+        i -= 1;
+        if token.sub_string(i, 1) == "/" {
+            return token.sub_string(i + 1, token.len() - i - 1);
+        }
+    }
+    token
+}
+
 fn is_shell_name(token) {
-    token == "sh" || token == "bash" || token == "dash" || token == "zsh"
+    let base = command_basename(token);
+    base == "sh" || base == "bash" || base == "dash" || base == "zsh"
 }
 
 fn strip_one_quote(word) {
@@ -490,8 +523,11 @@ fn skip_arith(text, j) {
     let depth = 2;
     let quote = "";
     let escape = false;
+    let bodies = [];
+    let taken = #{ body: "", next: 0 };
+    let ch = "";
     while j < n && depth > 0 {
-        let ch = text.sub_string(j, 1);
+        ch = text.sub_string(j, 1);
         if escape == true {
             escape = false;
         } else if quote == "'" {
@@ -499,10 +535,31 @@ fn skip_arith(text, j) {
         } else if quote == "\"" {
             if ch == "\\" { escape = true; }
             else if ch == "\"" { quote = ""; }
+            else if ch == "`" {
+                taken = take_backtick(text, j + 1);
+                bodies.push(taken.body);
+                j = taken.next;
+                continue;
+            } else if ch == "$" && j + 1 < n && text.sub_string(j + 1, 1) == "(" && (j + 2 >= n || text.sub_string(j + 2, 1) != "(") {
+                taken = take_paren_body(text, j + 2);
+                bodies.push(taken.body);
+                j = taken.next;
+                continue;
+            }
         } else if ch == "\\" {
             escape = true;
         } else if ch == "'" || ch == "\"" {
             quote = ch;
+        } else if ch == "`" {
+            taken = take_backtick(text, j + 1);
+            bodies.push(taken.body);
+            j = taken.next;
+            continue;
+        } else if ch == "$" && j + 1 < n && text.sub_string(j + 1, 1) == "(" && (j + 2 >= n || text.sub_string(j + 2, 1) != "(") {
+            taken = take_paren_body(text, j + 2);
+            bodies.push(taken.body);
+            j = taken.next;
+            continue;
         } else if ch == "(" {
             depth += 1;
         } else if ch == ")" {
@@ -510,7 +567,7 @@ fn skip_arith(text, j) {
         }
         j += 1;
     }
-    j
+    #{ next: j, bodies: bodies }
 }
 
 fn take_paren_body(text, start) {
@@ -585,6 +642,8 @@ fn nested_command_bodies(word) {
     let escape = false;
     let ch = "";
     let taken = #{ body: "", next: 0 };
+    let extra = [];
+    let ai = 0;
     while i < n {
         ch = word.sub_string(i, 1);
         if escape == true {
@@ -603,7 +662,14 @@ fn nested_command_bodies(word) {
                 continue;
             } else if ch == "$" && i + 1 < n && word.sub_string(i + 1, 1) == "(" {
                 if i + 2 < n && word.sub_string(i + 2, 1) == "(" {
-                    i = skip_arith(word, i + 3);
+                    taken = skip_arith(word, i + 3);
+                    extra = taken.bodies;
+                    ai = 0;
+                    while ai < extra.len() {
+                        bodies.push(extra[ai]);
+                        ai += 1;
+                    }
+                    i = taken.next;
                     continue;
                 }
                 taken = take_paren_body(word, i + 2);
@@ -622,7 +688,14 @@ fn nested_command_bodies(word) {
             continue;
         } else if ch == "$" && i + 1 < n && word.sub_string(i + 1, 1) == "(" {
             if i + 2 < n && word.sub_string(i + 2, 1) == "(" {
-                i = skip_arith(word, i + 3);
+                taken = skip_arith(word, i + 3);
+                extra = taken.bodies;
+                ai = 0;
+                while ai < extra.len() {
+                    bodies.push(extra[ai]);
+                    ai += 1;
+                }
+                i = taken.next;
                 continue;
             }
             taken = take_paren_body(word, i + 2);
@@ -662,6 +735,13 @@ fn scan_command_text(text, depth) {
     let nested = [];
     let bi = 0;
     let token = "";
+    let env_prefix = false;
+    let skip_redirect_target = false;
+    let redirect_op = false;
+    let fd_word = false;
+    let di = 0;
+    let digit = "";
+    let option_word = false;
     while i <= n {
         at_end = i == n;
         ch = "";
@@ -689,6 +769,8 @@ fn scan_command_text(text, depth) {
             command = "";
             saw_command = false;
             want_payload = false;
+            env_prefix = false;
+            skip_redirect_target = false;
             wi = 0;
             wlen = segment.len();
             while wi <= wlen {
@@ -702,6 +784,8 @@ fn scan_command_text(text, depth) {
                     }
                 }
                 if break_word == true {
+                    redirect_op = false;
+                    if wat_end != true && (wch == ">" || wch == "<") { redirect_op = true; }
                     if word != "" {
                         nested = nested_command_bodies(word);
                         bi = 0;
@@ -709,6 +793,19 @@ fn scan_command_text(text, depth) {
                             if scan_command_text(nested[bi], depth + 1) { return true; }
                             bi += 1;
                         }
+                    }
+                    fd_word = true;
+                    di = 0;
+                    while di < word.len() {
+                        digit = word.sub_string(di, 1);
+                        if digit < "0" || digit > "9" { fd_word = false; }
+                        di += 1;
+                    }
+                    if skip_redirect_target == true && word != "" {
+                        skip_redirect_target = false;
+                    } else if redirect_op == true && fd_word == true {
+                        skip_redirect_target = true;
+                    } else if word != "" {
                         if want_payload == true {
                             if scan_command_text(strip_one_quote(word), depth + 1) { return true; }
                             want_payload = false;
@@ -719,13 +816,25 @@ fn scan_command_text(text, depth) {
                                 if token != "" {
                                     saw_command = true;
                                     command = token;
+                                    if command_basename(token) == "env" { env_prefix = true; }
+                                }
+                            }
+                        } else if env_prefix == true {
+                            option_word = false;
+                            if word.sub_string(0, 1) == "-" { option_word = true; }
+                            if option_word != true && is_env_assignment(word) != true {
+                                token = trim_command_token(word);
+                                if token == "UNKNOWN" { return true; }
+                                if token != "" {
+                                    env_prefix = false;
+                                    command = token;
                                 }
                             }
                         } else if is_shell_name(command) && word == "-c" {
                             want_payload = true;
                         }
-                        word = "";
                     }
+                    word = "";
                 } else {
                     word += wch;
                     stepped = shell_quote_after(wquote, wescape, wch);
