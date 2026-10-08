@@ -928,6 +928,11 @@ fn scan_command_text(text, depth) {
     let di = 0;
     let digit = "";
     let option_word = false;
+    let env_operand = false;
+    let proc_sub = false;
+    let shell_c = false;
+    let ci = 0;
+    let taken = #{ body: "", next: 0 };
     while i <= n {
         at_end = i == n;
         ch = "";
@@ -956,6 +961,7 @@ fn scan_command_text(text, depth) {
             saw_command = false;
             want_payload = false;
             env_prefix = false;
+            env_operand = false;
             skip_redirect_target = false;
             wi = 0;
             wlen = segment.len();
@@ -987,11 +993,19 @@ fn scan_command_text(text, depth) {
                         if digit < "0" || digit > "9" { fd_word = false; }
                         di += 1;
                     }
+                    proc_sub = false;
+                    if redirect_op == true && wi + 1 < wlen {
+                        if segment.sub_string(wi + 1, 1) == "(" { proc_sub = true; }
+                    }
+                    if proc_sub == true {
+                        redirect_op = false;
+                        skip_redirect_target = false;
+                    }
                     if skip_redirect_target == true && word != "" {
                         skip_redirect_target = false;
                     } else if redirect_op == true && fd_word == true {
                         skip_redirect_target = true;
-                    } else if word != "" {
+                    } else if word != "" && (proc_sub != true || fd_word != true) {
                         if want_payload == true {
                             if scan_command_text(strip_one_quote(word), depth + 1) { return true; }
                             want_payload = false;
@@ -1006,19 +1020,41 @@ fn scan_command_text(text, depth) {
                                 }
                             }
                         } else if env_prefix == true {
-                            option_word = false;
-                            if word.sub_string(0, 1) == "-" { option_word = true; }
-                            if option_word != true && is_env_assignment(word) != true {
-                                token = trim_command_token(word);
-                                if token == "UNKNOWN" { return true; }
-                                if token != "" {
-                                    env_prefix = false;
-                                    command = token;
+                            if env_operand == true {
+                                env_operand = false;
+                            } else {
+                                option_word = false;
+                                if word.sub_string(0, 1) == "-" { option_word = true; }
+                                if option_word == true && (word == "-u" || word == "-C") {
+                                    env_operand = true;
+                                } else if option_word != true && is_env_assignment(word) != true {
+                                    token = trim_command_token(word);
+                                    if token == "UNKNOWN" { return true; }
+                                    if token != "" {
+                                        env_prefix = false;
+                                        env_operand = false;
+                                        command = token;
+                                    }
                                 }
                             }
-                        } else if is_shell_name(command) && word == "-c" {
-                            want_payload = true;
+                        } else if is_shell_name(command) {
+                            shell_c = false;
+                            if word.len() >= 2 && word.sub_string(0, 1) == "-" && word.sub_string(0, 2) != "--" {
+                                ci = 1;
+                                while ci < word.len() {
+                                    if word.sub_string(ci, 1) == "c" { shell_c = true; }
+                                    ci += 1;
+                                }
+                            }
+                            if shell_c == true { want_payload = true; }
                         }
+                    }
+                    if proc_sub == true {
+                        taken = take_paren_body(segment, wi + 2);
+                        if scan_command_text(taken.body, depth + 1) { return true; }
+                        word = "";
+                        wi = taken.next;
+                        continue;
                     }
                     word = "";
                 } else {
@@ -1260,6 +1296,17 @@ fn self_check() {
     if publishes_unknown_command("Product command: >$(UNKNOWN)\n") != true { return "redirect sub missed"; }
     if publishes_unknown_command("Product command: echo $((1+$(UNKNOWN)))\n") != true { return "arith sub missed"; }
     if publishes_unknown_command("Product command: echo $((1+$(echo UNKNOWN)))\n") { return "arith echo sub looked unknown"; }
+    if publishes_unknown_command("Product command: diff <(UNKNOWN) expected\n") != true { return "process input UNKNOWN missed"; }
+    if publishes_unknown_command("Product command: diff >(UNKNOWN) expected\n") != true { return "process output UNKNOWN missed"; }
+    if publishes_unknown_command("Product command: diff <(echo UNKNOWN) expected\n") { return "process echo UNKNOWN looked unknown"; }
+    if publishes_unknown_command("Product command: diff <(echo ok) expected\n") { return "process echo ok looked unknown"; }
+    if publishes_unknown_command("Product command: env -u FOO UNKNOWN\n") != true { return "env unset UNKNOWN missed"; }
+    if publishes_unknown_command("Product command: env -C /tmp UNKNOWN\n") != true { return "env chdir UNKNOWN missed"; }
+    if publishes_unknown_command("Product command: env -u FOO pytest -q\n") { return "env unset pytest looked unknown"; }
+    if publishes_unknown_command("Product command: env -uFOO pytest -q\n") { return "env glued unset pytest looked unknown"; }
+    if publishes_unknown_command("Product command: bash -ec \"UNKNOWN --flag\"\n") != true { return "bash cluster UNKNOWN missed"; }
+    if publishes_unknown_command("Product command: sh -xc \"UNKNOWN\"\n") != true { return "sh cluster UNKNOWN missed"; }
+    if publishes_unknown_command("Product command: bash -ec \"echo UNKNOWN\"\n") { return "bash cluster echo looked unknown"; }
     ""
 }
 
