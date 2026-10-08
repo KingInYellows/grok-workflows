@@ -1,0 +1,14 @@
+ship-next-issue.rhai
+  h_6000354274ce50 373-379,677-699,712,714,716,718-721,1586,1832-1835,1902-1912,1914-1919,1921-1928
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "996bd9d0089582e792fac20639433f42dad05cf5",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
