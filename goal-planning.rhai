@@ -623,38 +623,6 @@ fn shell_quote_after(quote, escape, ch) {
     #{ quote: "", escape: false }
 }
 
-fn has_unknown_shell_word(text) {
-    if type_of(text) != "string" || text == "" { return false; }
-    let n = text.len();
-    let i = 0;
-    let word = "";
-    let quote = "";
-    let escape = false;
-    while i <= n {
-        let at_end = i == n;
-        let ch = "";
-        if at_end != true { ch = text.sub_string(i, 1); }
-        let break_word = at_end;
-        if at_end != true && escape != true && quote == "" {
-            if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" || ch == ">" || ch == "<" {
-                break_word = true;
-            }
-        }
-        if break_word == true {
-            if trim_command_token(word) == "UNKNOWN" { return true; }
-            word = "";
-        } else {
-            word += ch;
-            let stepped = shell_quote_after(quote, escape, ch);
-            quote = stepped.quote;
-            escape = stepped.escape;
-        }
-        if at_end { break; }
-        i += 1;
-    }
-    false
-}
-
 fn first_shell_word(text) {
     if type_of(text) != "string" || text == "" { return ""; }
     let n = text.len();
@@ -701,56 +669,283 @@ fn is_env_assignment(word) {
     false
 }
 
-fn segment_leads_unknown(segment) {
-    if type_of(segment) != "string" || segment == "" { return false; }
-    let n = segment.len();
-    let i = 0;
-    let word = "";
-    while i <= n {
-        let at_end = i == n;
-        let ch = "";
-        if at_end != true { ch = segment.sub_string(i, 1); }
-        let break_word = at_end;
-        if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "&" || ch == "|" || ch == ";" || ch == ">" || ch == "<" {
-            break_word = true;
-        }
-        if break_word == true {
-            if word != "" {
-                if is_env_assignment(word) != true {
-                    return trim_command_token(word) == "UNKNOWN";
-                }
-                word = "";
-            }
-        } else {
-            word += ch;
-        }
-        if at_end { break; }
-        i += 1;
+fn is_shell_name(token) {
+    token == "sh" || token == "bash" || token == "dash" || token == "zsh"
+}
+
+fn strip_one_quote(word) {
+    if type_of(word) != "string" || word.len() < 2 { return word; }
+    let a = word.sub_string(0, 1);
+    let b = word.sub_string(word.len() - 1, 1);
+    if (a == "\"" && b == "\"") || (a == "'" && b == "'") {
+        return word.sub_string(1, word.len() - 2);
     }
+    word
+}
+
+fn at_word_start(segment) {
+    if segment == "" { return true; }
+    let ch = segment.sub_string(segment.len() - 1, 1);
+    if ch == " " || ch == "\t" || ch == "\n" || ch == "\r" { return true; }
+    if ch == "|" || ch == "&" || ch == ";" || ch == ">" || ch == "<" || ch == "(" { return true; }
     false
 }
 
-fn segment_command_unknown(text) {
-    if type_of(text) != "string" || text == "" { return false; }
+fn skip_arith(text, j) {
+    let n = text.len();
+    let depth = 2;
+    let quote = "";
+    let escape = false;
+    while j < n && depth > 0 {
+        let ch = text.sub_string(j, 1);
+        if escape == true {
+            escape = false;
+        } else if quote == "'" {
+            if ch == "'" { quote = ""; }
+        } else if quote == "\"" {
+            if ch == "\\" { escape = true; }
+            else if ch == "\"" { quote = ""; }
+        } else if ch == "\\" {
+            escape = true;
+        } else if ch == "'" || ch == "\"" {
+            quote = ch;
+        } else if ch == "(" {
+            depth += 1;
+        } else if ch == ")" {
+            depth -= 1;
+        }
+        j += 1;
+    }
+    j
+}
+
+fn take_paren_body(text, start) {
+    let n = text.len();
+    let j = start;
+    let depth = 1;
+    let body = "";
+    let quote = "";
+    let escape = false;
+    while j < n && depth > 0 {
+        let ch = text.sub_string(j, 1);
+        if escape == true {
+            body += ch;
+            escape = false;
+        } else if quote == "'" {
+            body += ch;
+            if ch == "'" { quote = ""; }
+        } else if quote == "\"" {
+            body += ch;
+            if ch == "\\" { escape = true; }
+            else if ch == "\"" { quote = ""; }
+        } else if ch == "\\" {
+            body += ch;
+            escape = true;
+        } else if ch == "'" || ch == "\"" {
+            body += ch;
+            quote = ch;
+        } else if ch == "(" {
+            body += ch;
+            depth += 1;
+        } else if ch == ")" {
+            depth -= 1;
+            if depth > 0 { body += ch; }
+        } else {
+            body += ch;
+        }
+        j += 1;
+    }
+    #{ body: body, next: j }
+}
+
+fn take_backtick(text, start) {
+    let n = text.len();
+    let j = start;
+    let body = "";
+    let escape = false;
+    while j < n {
+        let ch = text.sub_string(j, 1);
+        if escape == true {
+            body += ch;
+            escape = false;
+        } else if ch == "\\" {
+            body += ch;
+            escape = true;
+        } else if ch == "`" {
+            return #{ body: body, next: j + 1 };
+        } else {
+            body += ch;
+        }
+        j += 1;
+    }
+    #{ body: body, next: n }
+}
+
+
+fn nested_command_bodies(word) {
+    let bodies = [];
+    if type_of(word) != "string" || word == "" { return bodies; }
+    let n = word.len();
+    let i = 0;
+    let quote = "";
+    let escape = false;
+    let ch = "";
+    let taken = #{ body: "", next: 0 };
+    while i < n {
+        ch = word.sub_string(i, 1);
+        if escape == true {
+            escape = false;
+        } else if quote == "'" {
+            if ch == "'" { quote = ""; }
+        } else if quote == "\"" {
+            if ch == "\\" {
+                escape = true;
+            } else if ch == "\"" {
+                quote = "";
+            } else if ch == "`" {
+                taken = take_backtick(word, i + 1);
+                bodies.push(taken.body);
+                i = taken.next;
+                continue;
+            } else if ch == "$" && i + 1 < n && word.sub_string(i + 1, 1) == "(" {
+                if i + 2 < n && word.sub_string(i + 2, 1) == "(" {
+                    i = skip_arith(word, i + 3);
+                    continue;
+                }
+                taken = take_paren_body(word, i + 2);
+                bodies.push(taken.body);
+                i = taken.next;
+                continue;
+            }
+        } else if ch == "\\" {
+            escape = true;
+        } else if ch == "'" || ch == "\"" {
+            quote = ch;
+        } else if ch == "`" {
+            taken = take_backtick(word, i + 1);
+            bodies.push(taken.body);
+            i = taken.next;
+            continue;
+        } else if ch == "$" && i + 1 < n && word.sub_string(i + 1, 1) == "(" {
+            if i + 2 < n && word.sub_string(i + 2, 1) == "(" {
+                i = skip_arith(word, i + 3);
+                continue;
+            }
+            taken = take_paren_body(word, i + 2);
+            bodies.push(taken.body);
+            i = taken.next;
+            continue;
+        }
+        i += 1;
+    }
+    bodies
+}
+
+fn scan_command_text(text, depth) {
+    if type_of(text) != "string" || text == "" || depth > 4 { return false; }
     let n = text.len();
     let i = 0;
     let segment = "";
     let quote = "";
     let escape = false;
+    let comment = false;
+    let ch = "";
+    let at_end = false;
+    let need_finish = false;
+    let start_comment = false;
+    let stepped = #{ quote: "", escape: false };
+    let word = "";
+    let wquote = "";
+    let wescape = false;
+    let wch = "";
+    let wat_end = false;
+    let break_word = false;
+    let wi = 0;
+    let wlen = 0;
+    let command = "";
+    let saw_command = false;
+    let want_payload = false;
+    let nested = [];
+    let bi = 0;
+    let token = "";
     while i <= n {
-        let at_end = i == n;
-        let ch = "";
+        at_end = i == n;
+        ch = "";
         if at_end != true { ch = text.sub_string(i, 1); }
-        let break_seg = at_end;
-        if at_end != true && escape != true && quote == "" {
-            if ch == "|" || ch == "&" || ch == ";" { break_seg = true; }
+        if comment == true {
+            if at_end { break; }
+            if ch == "\n" || ch == "\r" { comment = false; }
+            i += 1;
+            continue;
         }
-        if break_seg == true {
-            if segment_leads_unknown(segment) { return true; }
+        need_finish = at_end;
+        start_comment = false;
+        if at_end != true && escape != true && quote == "" {
+            if ch == "|" || ch == "&" || ch == ";" || ch == "\n" || ch == "\r" {
+                need_finish = true;
+            } else if ch == "#" && at_word_start(segment) {
+                need_finish = true;
+                start_comment = true;
+            }
+        }
+        if need_finish == true {
+            word = "";
+            wquote = "";
+            wescape = false;
+            command = "";
+            saw_command = false;
+            want_payload = false;
+            wi = 0;
+            wlen = segment.len();
+            while wi <= wlen {
+                wat_end = wi == wlen;
+                wch = "";
+                if wat_end != true { wch = segment.sub_string(wi, 1); }
+                break_word = wat_end;
+                if wat_end != true && wescape != true && wquote == "" {
+                    if wch == " " || wch == "\t" || wch == "\n" || wch == "\r" || wch == "&" || wch == "|" || wch == ";" || wch == ">" || wch == "<" {
+                        break_word = true;
+                    }
+                }
+                if break_word == true {
+                    if word != "" {
+                        nested = nested_command_bodies(word);
+                        bi = 0;
+                        while bi < nested.len() {
+                            if scan_command_text(nested[bi], depth + 1) { return true; }
+                            bi += 1;
+                        }
+                        if want_payload == true {
+                            if scan_command_text(strip_one_quote(word), depth + 1) { return true; }
+                            want_payload = false;
+                        } else if saw_command != true {
+                            if is_env_assignment(word) != true {
+                                token = trim_command_token(word);
+                                if token == "UNKNOWN" { return true; }
+                                if token != "" {
+                                    saw_command = true;
+                                    command = token;
+                                }
+                            }
+                        } else if is_shell_name(command) && word == "-c" {
+                            want_payload = true;
+                        }
+                        word = "";
+                    }
+                } else {
+                    word += wch;
+                    stepped = shell_quote_after(wquote, wescape, wch);
+                    wquote = stepped.quote;
+                    wescape = stepped.escape;
+                }
+                if wat_end { break; }
+                wi += 1;
+            }
             segment = "";
+            if start_comment == true { comment = true; }
         } else {
             segment += ch;
-            let stepped = shell_quote_after(quote, escape, ch);
+            stepped = shell_quote_after(quote, escape, ch);
             quote = stepped.quote;
             escape = stepped.escape;
         }
@@ -758,6 +953,18 @@ fn segment_command_unknown(text) {
         i += 1;
     }
     false
+}
+
+fn has_unknown_shell_word(text) {
+    scan_command_text(text, 0)
+}
+
+fn segment_leads_unknown(segment) {
+    scan_command_text(segment, 0)
+}
+
+fn segment_command_unknown(text) {
+    scan_command_text(text, 0)
 }
 
 fn line_continues_shell(line) {
@@ -774,12 +981,12 @@ fn line_is_unknown_command(line) {
     let prefix = "Product command:";
     if starts_with(t, prefix) {
         let rest = t.sub_string(prefix.len(), t.len() - prefix.len());
-        if has_unknown_shell_word(rest) { return true; }
+        if scan_command_text(rest, 0) { return true; }
     }
     let looks = false;
     if starts_with(t, "PATH=") { looks = true; }
     if contains_str(t, "&&") || contains_str(t, "||") { looks = true; }
-    if looks == true && has_unknown_shell_word(t) { return true; }
+    if looks == true && scan_command_text(t, 0) { return true; }
     false
 }
 
@@ -921,6 +1128,29 @@ fn self_check() {
     if publishes_unknown_command("{\n  $((UNKNOWN))\n}\n") { return "group arithmetic looked unknown"; }
     if publishes_unknown_command("{\n  $((UNKNOWN + 1))\n}\n") { return "group arithmetic sum looked unknown"; }
     if publishes_unknown_command("{\n  $(UNKNOWN)\n}\n") != true { return "group substitution missed"; }
+    if publishes_unknown_command("Product command: echo pre$(UNKNOWN)post\n") != true { return "embedded substitution missed"; }
+    if publishes_unknown_command("Product command: pre$((UNKNOWN))post\n") { return "embedded arithmetic looked unknown"; }
+    if publishes_unknown_command("Product command: pre$(echo UNKNOWN)post\n") { return "embedded argument looked unknown"; }
+    if publishes_unknown_command("Product command: echo ok # >UNKNOWN\n") { return "product comment redirect looked unknown"; }
+    if publishes_unknown_command("Product command: ok#UNKNOWN\n") { return "product hash word looked unknown"; }
+    if publishes_unknown_command("Product command: UNKNOWN # note\n") != true { return "product commented UNKNOWN missed"; }
+    if publishes_unknown_command("{\n  echo ok # | UNKNOWN\n}\n") { return "group comment pipe looked unknown"; }
+    if publishes_unknown_command("{\n  echo ok # >UNKNOWN\n}\n") { return "group comment redirect looked unknown"; }
+    if publishes_unknown_command("{\n  ok#UNKNOWN\n}\n") { return "group hash word looked unknown"; }
+    if publishes_unknown_command("{\n  UNKNOWN # note\n}\n") != true { return "group commented UNKNOWN missed"; }
+    if publishes_unknown_command("{\n  echo ok | PATH=\"/opt/tool dir:$PATH\" UNKNOWN\n}\n") != true { return "quoted env pipe UNKNOWN missed"; }
+    if publishes_unknown_command("{\n  echo ok | PATH=\"/opt/tool dir:$PATH\" pytest -q\n}\n") { return "quoted env pipe pytest looked unknown"; }
+    if publishes_unknown_command("Product command: sh -c \"UNKNOWN --flag\"\n") != true { return "product sh -c missed"; }
+    if publishes_unknown_command("{\n  sh -c \"UNKNOWN --flag\"\n}\n") != true { return "group sh -c missed"; }
+    if publishes_unknown_command("{\n  bash -c 'UNKNOWN'\n}\n") != true { return "group bash -c missed"; }
+    if publishes_unknown_command("{\n  sh -c \"echo ok | UNKNOWN\"\n}\n") != true { return "group sh -c pipe missed"; }
+    if publishes_unknown_command("{\n  sh -c \"echo UNKNOWN\"\n}\n") { return "group sh -c echo looked unknown"; }
+    if publishes_unknown_command("Product command: sh -c \"echo UNKNOWN\"\n") { return "product sh -c echo looked unknown"; }
+    if publishes_unknown_command("{\n  echo -c \"UNKNOWN\"\n}\n") { return "group echo -c looked unknown"; }
+    if publishes_unknown_command("Product command: echo -c \"UNKNOWN\"\n") { return "product echo -c looked unknown"; }
+    if publishes_unknown_command("{\n  ( UNKNOWN --flag )\n}\n") != true { return "subshell UNKNOWN missed"; }
+    if publishes_unknown_command("{\n  ( pytest -q )\n}\n") { return "subshell pytest looked unknown"; }
+    if publishes_unknown_command("{\n  (UNKNOWN)\n}\n") != true { return "glued subshell UNKNOWN missed"; }
     ""
 }
 
