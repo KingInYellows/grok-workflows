@@ -28,7 +28,7 @@ Grok loads user-level workflows from real files in `~/.grok/workflows/` (not a s
 | `/preflight-gate` | Read-only pre-commit gate: review the diff, audit tests from `AGENTS.md`, scan for secrets, then SHIP or BLOCK |
 | `/repo-map` | Read-only map of repo layout, real test/lint commands, and the smallest safe change |
 | `/search-and-destroy` | AFK opportunistic improvement: scout bugs, polish, and half-done work |
-| `/ship-next-issue` | Pick the next open Linear issue, implement it, review it, and submit one Graphite PR. Unrelated tracked changes stay unstaged. Never merges |
+| `/ship-next-issue` | Pick the next open Linear issue (current cycle, then the rest of the team), implement it, review it, and submit one Graphite PR. Unrelated tracked changes stay unstaged. Never merges |
 | `/tech-debt-scan` | Scan one git root for technical debt and overwrite `TECH_DEBT.md` with a verified remediation plan |
 | `/workspace-map` | Read-only map of git roots, stacks, and verified commands in a multi-repo workspace |
 
