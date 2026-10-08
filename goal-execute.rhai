@@ -358,6 +358,8 @@ fn self_check() {
     if runnable_product_command("$(UNKNOWN)") { return "substitution UNKNOWN accepted"; }
     if runnable_product_command("UNKNOWN|tee") { return "glued pipe accepted"; }
     if runnable_product_command("${UNKNOWN}") != true { return "variable command rejected"; }
+    if runnable_product_command("$((UNKNOWN))") != true { return "arithmetic UNKNOWN rejected"; }
+    if runnable_product_command("$((UNKNOWN + 1))") != true { return "arithmetic sum rejected"; }
     if runnable_product_command("echo \"ready|UNKNOWN\"") != true { return "quoted pipe rejected"; }
     if runnable_product_command("echo 'ok|UNKNOWN'") != true { return "single quoted pipe rejected"; }
     if runnable_product_command("echo ok | UNKNOWN") { return "pipe UNKNOWN accepted"; }
@@ -394,6 +396,8 @@ fn trim_command_token(s) {
         if ch == "(" || ch == "\"" || ch == "'" || ch == "`" {
             t = t.sub_string(1, t.len() - 1);
             t = trimmed(t);
+        } else if t.len() >= 3 && t.sub_string(0, 3) == "$((" {
+            break;
         } else if t.len() >= 2 && t.sub_string(0, 2) == "$(" {
             t = t.sub_string(2, t.len() - 2);
             t = trimmed(t);

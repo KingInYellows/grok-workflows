@@ -592,6 +592,8 @@ fn trim_command_token(s) {
         if ch == "(" || ch == "\"" || ch == "'" || ch == "`" {
             t = t.sub_string(1, t.len() - 1);
             t = trimmed(t);
+        } else if t.len() >= 3 && t.sub_string(0, 3) == "$((" {
+            break;
         } else if t.len() >= 2 && t.sub_string(0, 2) == "$(" {
             t = t.sub_string(2, t.len() - 2);
             t = trimmed(t);
@@ -914,6 +916,11 @@ fn self_check() {
     if publishes_unknown_command("Product command: echo 'ok|UNKNOWN'\n") { return "single quoted product pipe looked unknown"; }
     if publishes_unknown_command("{\n  echo ok | PATH=\".venv/bin:$PATH\" UNKNOWN --flag\n}\n") != true { return "env pipe UNKNOWN missed"; }
     if publishes_unknown_command("{\n  echo ok | PATH=\".venv/bin:$PATH\" pytest -q\n}\n") { return "env pipe pytest looked unknown"; }
+    if publishes_unknown_command("Product command: $((UNKNOWN))\n") { return "arithmetic product looked unknown"; }
+    if publishes_unknown_command("Product command: $((UNKNOWN + 1))\n") { return "arithmetic sum looked unknown"; }
+    if publishes_unknown_command("{\n  $((UNKNOWN))\n}\n") { return "group arithmetic looked unknown"; }
+    if publishes_unknown_command("{\n  $((UNKNOWN + 1))\n}\n") { return "group arithmetic sum looked unknown"; }
+    if publishes_unknown_command("{\n  $(UNKNOWN)\n}\n") != true { return "group substitution missed"; }
     ""
 }
 
