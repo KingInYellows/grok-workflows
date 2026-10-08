@@ -695,6 +695,8 @@ fn self_check() {
     let listed = select_prompt("", "", 50);
     if listed.contains("Stop when cycle_candidates has") { return "pool stops early"; }
     if !listed.contains("Do not fill the pool from started issues and then stop") { return "pool started cap"; }
+    if !listed.contains("Finish paging a status before dropping any row from that status") { return "pool status page"; }
+    if listed.contains("nothing unread can outrank a full agent-ready pool") { return "pool early stop"; }
     if !listed.contains("fallback_candidates the same way") { return "fallback paging"; }
     if !listed.contains("Do not truncate labels or blocked_by") { return "row arrays"; }
     ""
@@ -711,12 +713,12 @@ fn select_prompt(only_issue, team_override, pool_cap) {
     p += "4. Otherwise call linear__list_cycles with the team id from list_teams and type current. The cycle list rejects a team name. When there is no current cycle, set cycle_ok false, leave cycle_candidates empty, and set cycle_truncated false. Do not set ok false only because the cycle is missing.\n";
     p += "5. When a current cycle exists, read linear__list_issues for state started, then unstarted, then backlog. Pass the team and that cycle. Pass limit ";
     p += pool_cap.to_string();
-    p += " on every call. Follow cursor while hasNextPage is true. Do not fill the pool from started issues and then stop. An agent-ready issue outranks status, so page later states before keeping a non-ready started issue. Stop paging only after every state has hasNextPage false, or after you have already kept ";
+    p += " on every call. Follow cursor while hasNextPage is true. Do not fill the pool from started issues and then stop. Finish paging a status before dropping any row from that status. A later page of the same status can have a better priority or an earlier identifier. Skip a later status only after the current status has hasNextPage false and you already hold ";
     p += pool_cap.to_string();
-    p += " agent-ready issues, because nothing unread can outrank a full agent-ready pool. From the rows you read, keep agent-ready issues first in status order started, unstarted, then backlog, then non-ready issues in that same status order, until ";
+    p += " agent-ready issues from a strictly better status. While the agent-ready count is under the cap, page later states before keeping a non-ready issue. From each fully read tier, keep priority 1, then 2, then 3, then 4, then none, then identifier ascending, not the first page. Keep agent-ready issues before non-ready issues, in status order started, unstarted, then backlog, until ";
     p += pool_cap.to_string();
-    p += " issues. Set cycle_truncated true when any issue was left out. Otherwise set cycle_truncated false. Set cycle_ok true when the current cycle was read.\n";
-    p += "6. Then fill fallback_candidates the same way, for the team, with no cycle argument. Remove any identifier already in cycle_candidates before the cap. Set fallback_truncated true when any team issue outside the cycle was left out. Otherwise set fallback_truncated false.\n";
+    p += " issues. Set cycle_truncated true when any issue was left unread. Otherwise set cycle_truncated false. Set cycle_ok true when the current cycle was read.\n";
+    p += "6. Then fill fallback_candidates the same way, for the team, with no cycle argument. Remove any identifier already in cycle_candidates before the cap. Set fallback_truncated true when any team issue outside the cycle was left unread. Otherwise set fallback_truncated false.\n";
     p += "7. Open means status type started, unstarted, or backlog. Keep needs-owner, epics, and blocked issues in the arrays. The script drops them and ranks agent-ready ahead of status. Do not call get_issue for every row. Array order does not matter.\n";
     p += "8. Each issue needs identifier, url, title, priority, status_type, labels, and blocked_by. priority is the integer value. blocked_by entries need identifier and status_type. Leave blocked_by empty when the list payload has no relations. labels is every label name. blocked_by is every blocker. Do not truncate labels or blocked_by.\n";
     p += "9. Set ok true only when trunk is non-empty and team_match_count is 1. Put the failure in error.\n";
