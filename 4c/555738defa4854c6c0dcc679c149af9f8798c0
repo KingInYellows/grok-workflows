@@ -1,0 +1,30 @@
+README.md
+  h_6000354274ce50 54
+graphite-pr-review.rhai
+  h_6000354274ce50 27
+graphite-stack-review.rhai
+  h_6000354274ce50 245,441,478
+linear-cycle-deliver.rhai
+  h_6000354274ce50 120
+scripts/verify.sh
+  h_6000354274ce50 1-59
+ship-next-issue.rhai
+  h_6000354274ce50 116
+workflow-support/graphite-stack-review/cli.mjs
+  h_6000354274ce50 1-1198
+workflow-support/graphite-stack-review/lib.mjs
+  h_6000354274ce50 1-644
+workflow-support/graphite-stack-review/parse.test.mjs
+  h_6000354274ce50 1-256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4c555738defa4854c6c0dcc679c149af9f8798c0",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
