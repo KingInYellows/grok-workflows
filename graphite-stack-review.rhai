@@ -242,7 +242,7 @@ fn map_bool(m, key, fallback) {
 }
 
 fn support_cli() {
-    "$HOME/.grok/workflow-support/graphite-stack-review/cli.mjs"
+    "$HOME/projects/grok-workflows/workflow-support/graphite-stack-review/cli.mjs"
 }
 
 fn bool_text(v) {
@@ -438,7 +438,7 @@ let cfg = #{
     human_review_policy: human_review_policy,
     resume: resume_ckpt,
     skip_review: skip_review,
-    support_cli: "$HOME/.grok/workflow-support/graphite-stack-review/cli.mjs",
+    support_cli: "$HOME/projects/grok-workflows/workflow-support/graphite-stack-review/cli.mjs",
 };
 
 fn guardrails_text() {
@@ -475,7 +475,7 @@ fn discover_prompt(cfg_map, cfg_json) {
     if cfg_map.from_pr > 0 { p += " --from-pr " + cfg_map.from_pr.to_string(); }
     if cfg_map.to_pr > 0 { p += " --to-pr " + cfg_map.to_pr.to_string(); }
     p += " --lock false\n";
-    p += "If the script is missing, look in $HOME/.grok/workflow-support/graphite-stack-review/cli.mjs or GRAPHITE_STACK_REVIEW_HOME.\n";
+    p += "If the script is missing, look in $HOME/projects/grok-workflows/workflow-support/graphite-stack-review/cli.mjs. GRAPHITE_STACK_REVIEW_HOME is the state directory, not the script.\n";
     p += "If stdout has shell noise before JSON, parse from the first `{` to the matching last `}`.\n";
     p += "Copy the JSON fields into your output object. If the command fails, set ok=false and error to the stderr.\n";
     p += "An empty prs list is valid after a successful discover of a stack with no open PRs.\n";
