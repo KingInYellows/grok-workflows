@@ -1,7 +1,7 @@
 let meta = #{
     name: "ship-next-issue",
     description: "Pick the next open issue in any git repo, implement it, review it, submit one Graphite PR, and take one bot-comment pass",
-    when_to_use: "Any git checkout. Picks the next completable open issue for the Linear team matching the origin repo name, or args.issue. Submits one Graphite PR unless args.submit is false. One bot-comment pass after submit, not a long-lived watcher. Never merges. /ship-next-issue or /workflow ship-next-issue.",
+    when_to_use: "Any git checkout. Picks the next completable open issue for the Linear team matching the origin repo name, or args.issue. Submits one Graphite PR unless args.submit is false. One bot-comment pass after submit, not a long-lived watcher. Never merges. Tracked changes that do not overlap the planned files stay unstaged. /ship-next-issue or /workflow ship-next-issue.",
     phases: [
         #{ title: "Select", detail: "rank one open issue" },
         #{ title: "Evaluate", detail: "reject work one PR cannot finish" },
@@ -152,13 +152,60 @@ fn tools_read() {
     "Allowed tools: read_file, list_dir, and grep. Do not edit. Do not run git or Linear.\n"
 }
 
+fn control_path(path) {
+    let i = 0;
+    let n = path.len();
+    while i < n {
+        let ch = path.sub_string(i, 1);
+        if ch < " " || ch == "\u007f" || ch == "\u0085" || ch == "\u2028" || ch == "\u2029" {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 fn bad_path(path) {
     let p = trimmed(path);
     if p == "" { return true; }
     if p.sub_string(0, 1) == "/" { return true; }
     if p.contains("..") { return true; }
     if p.contains("node_modules") { return true; }
+    if control_path(p) { return true; }
     false
+}
+
+fn canonical_rel_path(path) {
+    let p = trimmed(path);
+    while p.len() >= 2 && p.sub_string(0, 2) == "./" {
+        p = p.sub_string(2, p.len() - 2);
+        while p.len() > 0 && p.sub_string(0, 1) == "/" {
+            p = p.sub_string(1, p.len() - 1);
+        }
+    }
+    let out = "";
+    let i = 0;
+    let n = p.len();
+    while i < n {
+        let dot_seg = false;
+        if i + 2 <= n && p.sub_string(i, 2) == "./" {
+            if i == 0 || p.sub_string(i - 1, 1) == "/" {
+                dot_seg = true;
+            }
+        }
+        if dot_seg {
+            i += 2;
+            continue;
+        }
+        let cur = p.sub_string(i, 1);
+        if cur == "/" && out.len() > 0 && out.sub_string(out.len() - 1, 1) == "/" {
+            i += 1;
+            continue;
+        }
+        out += cur;
+        i += 1;
+    }
+    out
 }
 
 fn clean_paths(raw, limit) {
@@ -296,6 +343,236 @@ fn self_check() {
     if branch_for("EX-2") != "agent/fix/EX-2" { return "branch"; }
     if safe_branch("agent/fix/EX-2") != true { return "safe branch"; }
     if clean_paths(["../x", "src/a.ts", "src/a.ts"], 8).paths.len() != 1 { return "paths"; }
+    if kept_paths(["../x"]).ok { return "dirty escape"; }
+    if kept_paths([".gitignore", ".gitignore"]).ok { return "dirty dup"; }
+    let kept = kept_paths([".gitignore"]);
+    if kept.ok != true || kept.paths.len() != 1 { return "dirty keep"; }
+    if kept_paths([""]).ok { return "dirty empty"; }
+    if kept_paths(["   "]).ok { return "dirty blank"; }
+    let cap = [];
+    let cap_i = 0;
+    while cap_i < 32 {
+        cap.push("k" + cap_i.to_string());
+        cap_i += 1;
+    }
+    let capped = kept_paths(cap);
+    if capped.ok != true || capped.paths.len() != 32 { return "dirty cap 32"; }
+    cap.push("k32");
+    if kept_paths(cap).ok { return "dirty cap 33"; }
+    let sample = #{ test_file: "tests/a.py", production_files: [".github/workflows/deployable-image.yml"] };
+    if blocking_paths(kept.paths, sample).len() != 0 { return "dirty unrelated"; }
+    if blocking_paths([".github/workflows/deployable-image.yml"], sample).len() != 1 { return "dirty overlap"; }
+    if !keep_text([".gitignore"]).contains(".gitignore") { return "keep text"; }
+    if !dirty_prompt().contains("--untracked-files=no") { return "dirty status"; }
+    if !dirty_prompt().contains("two-character status") { return "dirty prefix"; }
+    if !red_prompt(#{}, #{}, "agent/fix/EX-2", "main", [".gitignore"]).contains(".gitignore") { return "red keep"; }
+    if !red_prompt(#{}, #{}, "agent/fix/EX-2", "main", []).contains("is not empty before you edit") { return "red empty stop"; }
+    let unstaged = dirty_entries([" M .gitignore"]);
+    if map_bool(unstaged, "ok", false) != true { return "unstaged parse"; }
+    if as_array(map_get(unstaged, "paths")).len() != 1 { return "unstaged keep"; }
+    if as_array(map_get(unstaged, "staged")).len() != 0 { return "unstaged staged"; }
+    if blocking_paths(as_array(map_get(unstaged, "paths")), sample).len() != 0 { return "dirty unrelated porcelain"; }
+    let staged = dirty_entries(["M  .gitignore"]);
+    if map_bool(staged, "ok", false) != true { return "staged parse"; }
+    if staged_foreign_paths(map_get(staged, "staged"), sample).len() != 1 { return "staged foreign"; }
+    let planned_staged = dirty_entries(["M  tests/a.py"]);
+    if staged_foreign_paths(map_get(planned_staged, "staged"), sample).len() != 0 { return "staged planned"; }
+    let dot_plan = #{ test_file: "./tests/a.py", production_files: [] };
+    if blocking_paths(["tests/a.py"], dot_plan).len() != 1 { return "alias dot slash"; }
+    let mid_plan = #{ test_file: "tests/./a.py", production_files: [] };
+    if blocking_paths(["tests/a.py"], mid_plan).len() != 1 { return "alias dot seg"; }
+    if staged_foreign_paths(["tests/a.py"], dot_plan).len() != 0 { return "alias staged"; }
+    let slash_plan = #{ test_file: "tests//a.py", production_files: ["tests///b.py"] };
+    if blocking_paths(["tests/a.py"], slash_plan).len() != 1 { return "alias slash"; }
+    if blocking_paths(["tests/b.py"], slash_plan).len() != 1 { return "alias slash many"; }
+    if staged_foreign_paths(["tests/a.py"], slash_plan).len() != 0 { return "alias slash staged"; }
+    if canonical_rel_path("tests//./a.py") != "tests/a.py" { return "alias slash dot"; }
+    if canonical_rel_path(".//tests/a.py") != "tests/a.py" { return "alias dot slash slash"; }
+    if canonical_rel_path(".///a.py") != "a.py" { return "alias dot slash many"; }
+    let dot_slash_plan = #{ test_file: ".//tests/a.py", production_files: [] };
+    if blocking_paths(["tests/a.py"], dot_slash_plan).len() != 1 { return "alias dot slash block"; }
+    if !bad_path(canonical_rel_path("/tests/a.py")) { return "alias absolute"; }
+    if !bad_path(canonical_rel_path("//tests/a.py")) { return "alias absolute slash"; }
+    let alias_row = dirty_entries([" M ./tests/a.py"]);
+    if map_bool(alias_row, "ok", false) != true { return "alias porcelain"; }
+    if as_array(map_get(alias_row, "paths"))[0] != "tests/a.py" { return "alias porcelain path"; }
+    if !bad_path("a\nb") { return "control newline"; }
+    if !bad_path("a\rb") { return "control cr"; }
+    if !bad_path("a\u007fb") { return "control del"; }
+    if !bad_path("a\u0085b") { return "control nel"; }
+    if !bad_path("a\u2028b") { return "control line sep"; }
+    if !bad_path("a\u2029b") { return "control para sep"; }
+    if dirty_entries(["M  \"bad\\nname.py\""]).ok { return "quote newline"; }
+    if dirty_entries(["M  \"bad\\177name.py\""]).ok { return "quote del"; }
+    if dirty_entries(["M  \"bad\\302\\205name.py\""]).ok { return "quote nel"; }
+    if dirty_entries(["M  \"bad\\342\\200\\250name.py\""]).ok { return "quote line sep"; }
+    if dirty_entries(["M  \"bad\\342\\200\\251name.py\""]).ok { return "quote para sep"; }
+    if !keep_text(["a\nb"]).contains("\\n") { return "keep escape"; }
+    let renamed = dirty_entries(["R  old.txt -> new.txt"]);
+    if map_bool(renamed, "ok", false) != true { return "rename parse"; }
+    let rename_paths = as_array(map_get(renamed, "paths"));
+    if rename_paths.len() != 2 { return "rename paths"; }
+    if rename_paths[0] != "old.txt" { return "rename source"; }
+    if rename_paths[1] != "new.txt" { return "rename dest"; }
+    let rename_staged = as_array(map_get(renamed, "staged"));
+    if rename_staged.len() != 2 { return "rename staged"; }
+    if rename_staged[0] != "old.txt" || rename_staged[1] != "new.txt" { return "rename staged names"; }
+    if staged_foreign_paths(rename_staged, sample).len() != 2 { return "rename foreign"; }
+    let old_plan = #{ test_file: "old.txt", production_files: [] };
+    let old_overlap = blocking_paths(rename_paths, old_plan);
+    if old_overlap.len() != 1 || old_overlap[0] != "old.txt" { return "rename overlap"; }
+    let unstaged_rename = dirty_entries([" R old.txt -> new.txt"]);
+    if map_bool(unstaged_rename, "ok", false) != true { return "rename unstaged parse"; }
+    if as_array(map_get(unstaged_rename, "paths")).len() != 2 { return "rename unstaged paths"; }
+    if as_array(map_get(unstaged_rename, "staged")).len() != 0 { return "rename unstaged"; }
+    let quoted_rename = dirty_entries(["R  \"old name.txt\" -> \"new name.txt\""]);
+    if map_bool(quoted_rename, "ok", false) != true { return "quote rename"; }
+    let quoted_rename_paths = as_array(map_get(quoted_rename, "paths"));
+    if quoted_rename_paths.len() != 2 { return "quote rename paths"; }
+    if quoted_rename_paths[0] != "old name.txt" || quoted_rename_paths[1] != "new name.txt" { return "quote rename names"; }
+    if as_array(map_get(quoted_rename, "staged")).len() != 2 { return "quote rename staged"; }
+    let spaced = dirty_entries(["M  \"tests/a b.py\""]);
+    if map_bool(spaced, "ok", false) != true { return "quote space"; }
+    let space_plan = #{ test_file: "tests/a b.py", production_files: [] };
+    let space_overlap = blocking_paths(as_array(map_get(spaced, "paths")), space_plan);
+    if space_overlap.len() != 1 || space_overlap[0] != "tests/a b.py" { return "quote space block"; }
+    let kept_quote = dirty_entries([" M \"notes/a b.md\""]);
+    if map_bool(kept_quote, "ok", false) != true { return "quote keep"; }
+    if as_array(map_get(kept_quote, "paths"))[0] != "notes/a b.md" { return "quote keep path"; }
+    if as_array(map_get(kept_quote, "staged")).len() != 0 { return "quote keep staged"; }
+    if blocking_paths(as_array(map_get(kept_quote, "paths")), sample).len() != 0 { return "quote keep overlap"; }
+    let quoted_arrow = dirty_entries(["M  \"a -> b.txt\""]);
+    if map_bool(quoted_arrow, "ok", false) != true { return "quote arrow"; }
+    let arrow_paths = as_array(map_get(quoted_arrow, "paths"));
+    if arrow_paths.len() != 1 || arrow_paths[0] != "a -> b.txt" { return "quote arrow path"; }
+    let cafe = dirty_entries(["M  \"caf\\303\\251.py\""]);
+    if map_bool(cafe, "ok", false) != true { return "quote cafe"; }
+    let cafe_plan = #{ test_file: "caf\u00e9.py", production_files: [] };
+    if blocking_paths(as_array(map_get(cafe, "paths")), cafe_plan).len() != 1 { return "quote cafe block"; }
+    let raw_cafe = dirty_entries(["M  \"caf\u00e9 x.py\""]);
+    if map_bool(raw_cafe, "ok", false) != true { return "quote raw cafe"; }
+    if as_array(map_get(raw_cafe, "paths"))[0] != "caf\u00e9 x.py" { return "quote raw cafe path"; }
+    let raw_cafe_plan = #{ test_file: "caf\u00e9 x.py", production_files: [] };
+    if blocking_paths(as_array(map_get(raw_cafe, "paths")), raw_cafe_plan).len() != 1 { return "quote raw cafe block"; }
+    let raw_euro = dirty_entries(["M  \"\u20ac x.py\""]);
+    if map_bool(raw_euro, "ok", false) != true { return "quote raw euro"; }
+    if as_array(map_get(raw_euro, "paths"))[0] != "\u20ac x.py" { return "quote raw euro path"; }
+    let euro = dirty_entries(["M  \"\\342\\202\\254.py\""]);
+    if map_bool(euro, "ok", false) != true { return "quote euro"; }
+    if as_array(map_get(euro, "paths"))[0] != "\u20ac.py" { return "quote euro path"; }
+    if dirty_entries(["M  \"unterminated"]).ok { return "quote open"; }
+    if dirty_entries(["M  \"bad\\q\""]).ok { return "quote escape"; }
+    if dirty_entries(["M  \"ok\" x"]).ok { return "quote junk"; }
+    if dirty_entries(["M  \"\\377\""]).ok { return "quote utf8"; }
+    if dirty_entries([" M .gitignore", " M .gitignore"]).ok { return "dirty dup porcelain"; }
+    if dirty_entries([" M ../x"]).ok { return "dirty escape porcelain"; }
+    let green_empty = green_prompt(#{}, sample, "agent/fix/EX-2", []);
+    if !green_empty.contains("tests/a.py") { return "green test"; }
+    if !green_empty.contains("already be dirty") { return "green red file"; }
+    if green_empty.contains("is not empty before you edit") { return "green blocked red"; }
+    if !green_empty.contains("Any other tracked path") { return "green other"; }
+    if !green_empty.contains("index column") { return "green staged"; }
+    let green_kept = green_prompt(#{}, sample, "agent/fix/EX-2", [".gitignore"]);
+    if !green_kept.contains(".gitignore") { return "green keep"; }
+    if !green_kept.contains("Any other tracked path") { return "green keep other"; }
+    let keep_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let other_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let keep_list = [".gitignore"];
+    let keep_works = [#{ path: ".gitignore", work: keep_hash }];
+    let keep_same = #{
+        paths: [" M .gitignore"],
+        works: [#{ path: ".gitignore", work: keep_hash }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_same) != "" { return "keep same"; }
+    let keep_restored = #{
+        paths: [],
+        works: [#{ path: ".gitignore", work: keep_hash }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_restored) != "restored" { return "keep restored"; }
+    let keep_staged = #{
+        paths: ["M  .gitignore"],
+        works: [#{ path: ".gitignore", work: keep_hash }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_staged) != "staged" { return "keep staged"; }
+    let keep_rewritten = #{
+        paths: [" M .gitignore"],
+        works: [#{ path: ".gitignore", work: other_hash }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_rewritten) != "rewritten" { return "keep rewritten"; }
+    let keep_dropped = #{
+        paths: [" M other.txt"],
+        works: [#{ path: "other.txt", work: keep_hash }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_dropped) != "restored" { return "keep dropped"; }
+    if keep_drift([], [], keep_works, keep_restored) != "" { return "keep empty"; }
+    let keep_bad = #{
+        paths: [" M .gitignore"],
+        works: [#{ path: ".gitignore", work: "nope" }],
+    };
+    if keep_drift(keep_list, [], keep_works, keep_bad) != "unreadable" { return "keep bad hash"; }
+    let keep_absent = #{
+        paths: [" D .gitignore"],
+        works: [#{ path: ".gitignore", work: "absent" }],
+    };
+    let absent_works = [#{ path: ".gitignore", work: "absent" }];
+    if keep_drift(keep_list, [], absent_works, keep_absent) != "" { return "keep absent"; }
+    let sub_hash = "sub:" + keep_hash + ":dirty";
+    let sub_other = "sub:" + other_hash + ":clean";
+    let sub_works = [#{ path: "vendor/lib", work: sub_hash }];
+    let sub_same = #{
+        paths: [" M vendor/lib"],
+        works: [#{ path: "vendor/lib", work: sub_hash }],
+    };
+    if keep_drift(["vendor/lib"], [], sub_works, sub_same) != "" { return "keep sub same"; }
+    let sub_moved = #{
+        paths: [" M vendor/lib"],
+        works: [#{ path: "vendor/lib", work: sub_other }],
+    };
+    if keep_drift(["vendor/lib"], [], sub_works, sub_moved) != "rewritten" { return "keep sub moved"; }
+    let sub_absent = #{
+        paths: [" M vendor/lib"],
+        works: [#{ path: "vendor/lib", work: "absent" }],
+    };
+    let sub_absent_works = [#{ path: "vendor/lib", work: "absent" }];
+    if keep_drift(["vendor/lib"], [], sub_absent_works, sub_absent) != "unreadable" { return "keep sub absent"; }
+    if !list_has(as_array(map_get(renamed, "missing")), "old.txt") { return "rename missing source"; }
+    if list_has(as_array(map_get(renamed, "missing")), "new.txt") { return "rename missing dest"; }
+    let dir_plan = #{ test_file: "tests/a.py", production_files: ["src"] };
+    if blocking_paths(["src/a.ts"], dir_plan).len() != 1 { return "plan dir child"; }
+    if blocking_paths(["src-x/a.ts"], dir_plan).len() != 0 { return "plan dir cousin"; }
+    if blocking_paths(["src/a.ts"], sample).len() != 0 { return "plan file child"; }
+    let dot_dir = #{ test_file: "tests/a.py", production_files: ["./src"] };
+    if blocking_paths(["src/a.ts"], dot_dir).len() != 1 { return "plan dot dir"; }
+    if !plan_literals(sample) { return "plan sample literal"; }
+    if !plan_literals(dir_plan) { return "plan dir name"; }
+    let glob_plan = #{ test_file: "tests/a.py", production_files: ["src/*"] };
+    if plan_literals(glob_plan) { return "plan glob"; }
+    let slash_dir_plan = #{ test_file: "src/", production_files: ["src/a.ts"] };
+    if plan_literals(slash_dir_plan) { return "plan trailing"; }
+    let magic_plan = #{ test_file: "tests/a.py", production_files: [":(glob)src/a.ts"] };
+    if plan_literals(magic_plan) { return "plan magic"; }
+    if keep_note("rewritten") != "A kept path was rewritten." { return "keep note rewritten"; }
+    if keep_note("staged") != "A kept path was staged." { return "keep note staged"; }
+    if keep_note("restored") != "A kept path was restored or dropped." { return "keep note restored"; }
+    if keep_note("unreadable") != "Could not recheck kept paths." { return "keep note unreadable"; }
+    if keep_note("") != "" { return "keep note empty"; }
+    if !backup_root_ok("/repo/.git/ship-next-issue-keep.Ab12Cd34") { return "backup root"; }
+    if !backup_root_ok("/repo/.git/worktrees/wt/ship-next-issue-keep.Ab12Cd34") { return "backup worktree"; }
+    if backup_root_ok("/repo/.git/ship-next-issue-keep") { return "backup reused"; }
+    if backup_root_ok("/repo/.git/ship-next-issue-keep.") { return "backup empty token"; }
+    if backup_root_ok("/repo/.git/ship-next-issue-keep.ab") { return "backup short token"; }
+    if backup_root_ok("/repo/.git/worktrees/wt/ship-next-issue-keep.Ab12Cd34/extra") { return "backup nested"; }
+    if backup_root_ok("repo/.git/ship-next-issue-keep.Ab12Cd34") { return "backup relative"; }
+    if backup_root_ok("/repo/ship-next-issue-keep.Ab12Cd34") { return "backup not git"; }
+    if backup_root_ok("/repo/.git/../ship-next-issue-keep.Ab12Cd34") { return "backup dotdot"; }
+    if !keep_backup_prompt([".gitignore"]).contains("mktemp -d") { return "backup fresh"; }
+    if !keep_backup_prompt([".gitignore"]).contains("path.index") { return "backup index"; }
+    if !keep_backup_prompt([".gitignore"]).contains("Do not edit") { return "backup prompt edit"; }
+    if !keep_backup_prompt([".gitignore"]).contains("backed_up false") { return "backup dirty dir"; }
+    let restore_prompt = keep_restore_prompt([".gitignore"], "/repo/.git/ship-next-issue-keep.Ab12Cd34");
+    if !restore_prompt.contains(".gitignore") { return "restore prompt"; }
+    if !restore_prompt.contains("update-index --index-info") { return "restore index"; }
+    if !restore_prompt.contains("backup_root/path and backup_root/path.absent") { return "restore stale marker"; }
     ""
 }
 
@@ -350,19 +627,601 @@ fn plan_skeptic_prompt(issue, plan, focus) {
     p
 }
 
-fn dirty_prompt() {
-    let p = "You check whether the git worktree is clean. Do not edit, commit, or submit.\n";
-    p += guardrails_text();
-    p += tools_exec();
-    p += "Run git status --porcelain --untracked-files=no. When the output is empty, set clean true and evidence to clean. Otherwise set clean false and put the porcelain text in evidence.\n";
+fn kept_paths(raw) {
+    let out = [];
+    for item in as_array(raw) {
+        let p = trimmed(item);
+        if p == "" || bad_path(p) || list_has(out, p) || out.len() >= 32 {
+            return #{ ok: false, paths: [] };
+        }
+        out.push(p);
+    }
+    #{ ok: true, paths: out }
+}
+
+fn planned_paths(plan) {
+    let out = [];
+    let test_file = canonical_rel_path(map_str(plan, "test_file"));
+    if test_file != "" {
+        out.push(test_file);
+    }
+    for item in as_array(map_get(plan, "production_files")) {
+        let p = canonical_rel_path(trimmed(item));
+        if p != "" && !list_has(out, p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn path_under(parent, child) {
+    if parent == "" || child == "" || parent == child { return false; }
+    let prefix = parent;
+    if prefix.sub_string(prefix.len() - 1, 1) != "/" {
+        prefix += "/";
+    }
+    if child.len() <= prefix.len() { return false; }
+    child.sub_string(0, prefix.len()) == prefix
+}
+
+fn blocking_paths(dirty_paths, plan) {
+    let named = planned_paths(plan);
+    let blocking = [];
+    for path in dirty_paths {
+        let hit = list_has(named, path);
+        if !hit {
+            for named_path in named {
+                if path_under(named_path, path) {
+                    hit = true;
+                }
+            }
+        }
+        if hit {
+            blocking.push(path);
+        }
+    }
+    blocking
+}
+
+fn literal_plan_path(path) {
+    let p = canonical_rel_path(path);
+    if p == "" || bad_path(p) { return false; }
+    if p.contains("*") || p.contains("?") || p.contains("[") || p.contains("]") { return false; }
+    if p.sub_string(0, 1) == ":" { return false; }
+    if p.sub_string(p.len() - 1, 1) == "/" { return false; }
+    true
+}
+
+fn plan_literals(plan) {
+    if !literal_plan_path(map_str(plan, "test_file")) { return false; }
+    let n = 0;
+    for item in as_array(map_get(plan, "production_files")) {
+        if !literal_plan_path(trimmed(item)) { return false; }
+        n += 1;
+    }
+    n > 0
+}
+
+fn octal_value(ch) {
+    if ch == "0" { return 0; }
+    if ch == "1" { return 1; }
+    if ch == "2" { return 2; }
+    if ch == "3" { return 3; }
+    if ch == "4" { return 4; }
+    if ch == "5" { return 5; }
+    if ch == "6" { return 6; }
+    if ch == "7" { return 7; }
+    -1
+}
+
+fn ascii_byte(ch) {
+    let table = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    let i = 0;
+    while i < table.len() {
+        if table.sub_string(i, 1) == ch { return i + 32; }
+        i += 1;
+    }
+    -1
+}
+
+fn utf8_ok(bytes) {
+    let i = 0;
+    let n = bytes.len();
+    while i < n {
+        let b0 = bytes[i];
+        if b0 == 0 { return false; }
+        if b0 < 128 {
+            i += 1;
+            continue;
+        }
+        if b0 >= 194 && b0 <= 223 {
+            if i + 1 >= n { return false; }
+            let b1 = bytes[i + 1];
+            if b1 < 128 || b1 > 191 { return false; }
+            i += 2;
+            continue;
+        }
+        if b0 >= 224 && b0 <= 239 {
+            if i + 2 >= n { return false; }
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            if b2 < 128 || b2 > 191 { return false; }
+            if b0 == 224 {
+                if b1 < 160 || b1 > 191 { return false; }
+            } else if b0 == 237 {
+                if b1 < 128 || b1 > 159 { return false; }
+            } else if b1 < 128 || b1 > 191 {
+                return false;
+            }
+            i += 3;
+            continue;
+        }
+        if b0 >= 240 && b0 <= 244 {
+            if i + 3 >= n { return false; }
+            let b1 = bytes[i + 1];
+            let b2 = bytes[i + 2];
+            let b3 = bytes[i + 3];
+            if b2 < 128 || b2 > 191 { return false; }
+            if b3 < 128 || b3 > 191 { return false; }
+            if b0 == 240 {
+                if b1 < 144 || b1 > 191 { return false; }
+            } else if b0 == 244 {
+                if b1 < 128 || b1 > 143 { return false; }
+            } else if b1 < 128 || b1 > 191 {
+                return false;
+            }
+            i += 4;
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+fn utf8_bytes(code) {
+    if code < 128 || code > 1114111 { return (); }
+    if code >= 55296 && code <= 57343 { return (); }
+    if code < 2048 {
+        return [192 + (code / 64), 128 + (code % 64)];
+    }
+    if code < 65536 {
+        return [224 + (code / 4096), 128 + ((code / 64) % 64), 128 + (code % 64)];
+    }
+    [
+        240 + (code / 262144),
+        128 + ((code / 4096) % 64),
+        128 + ((code / 64) % 64),
+        128 + (code % 64),
+    ]
+}
+
+// as_string turns invalid UTF-8 into U+FFFD and does not throw.
+fn bytes_to_text(bytes) {
+    if !utf8_ok(bytes) { return (); }
+    let buf = blob();
+    for n in bytes {
+        buf.push(n);
+    }
+    buf.as_string()
+}
+
+fn decode_porcelain_path(token) {
+    if type_of(token) != "string" || token == "" { return (); }
+    if token.sub_string(0, 1) != "\"" {
+        if token.contains("\"") || token.contains("\\") { return (); }
+        return trimmed(token);
+    }
+    let n = token.len();
+    if n < 2 || token.sub_string(n - 1, 1) != "\"" { return (); }
+    let bytes = [];
+    let i = 1;
+    let end = n - 1;
+    while i < end {
+        let ch = token.sub_string(i, 1);
+        if ch == "\\" {
+            if i + 1 >= end { return (); }
+            let esc = token.sub_string(i + 1, 1);
+            if esc == "a" { bytes.push(7); i += 2; continue; }
+            if esc == "b" { bytes.push(8); i += 2; continue; }
+            if esc == "t" { bytes.push(9); i += 2; continue; }
+            if esc == "n" { bytes.push(10); i += 2; continue; }
+            if esc == "v" { bytes.push(11); i += 2; continue; }
+            if esc == "f" { bytes.push(12); i += 2; continue; }
+            if esc == "r" { bytes.push(13); i += 2; continue; }
+            if esc == "\\" { bytes.push(92); i += 2; continue; }
+            if esc == "\"" { bytes.push(34); i += 2; continue; }
+            let digit = octal_value(esc);
+            if digit < 0 { return (); }
+            let val = digit;
+            let used = 1;
+            if i + 2 < end {
+                let second = octal_value(token.sub_string(i + 2, 1));
+                if second >= 0 {
+                    val = val * 8 + second;
+                    used = 2;
+                    if i + 3 < end {
+                        let third = octal_value(token.sub_string(i + 3, 1));
+                        if third >= 0 {
+                            val = val * 8 + third;
+                            used = 3;
+                        }
+                    }
+                }
+            }
+            if val > 255 { return (); }
+            bytes.push(val);
+            i += 1 + used;
+            continue;
+        }
+        if ch == "\"" { return (); }
+        let byte = ascii_byte(ch);
+        if byte >= 0 {
+            bytes.push(byte);
+            i += 1;
+            continue;
+        }
+        if ch == "" { return (); }
+        let code = ch[0].to_int();
+        let extra = utf8_bytes(code);
+        if extra == () { return (); }
+        for extra_byte in extra {
+            bytes.push(extra_byte);
+        }
+        i += 1;
+    }
+    bytes_to_text(bytes)
+}
+
+fn split_porcelain_paths(rest) {
+    if type_of(rest) != "string" || rest == "" { return (); }
+    let n = rest.len();
+    let i = 0;
+    let in_quote = false;
+    while i < n {
+        let ch = rest.sub_string(i, 1);
+        if in_quote {
+            if ch == "\\" {
+                if i + 1 >= n { return (); }
+                i += 2;
+                continue;
+            }
+            if ch == "\"" { in_quote = false; }
+            i += 1;
+            continue;
+        }
+        if ch == "\"" {
+            in_quote = true;
+            i += 1;
+            continue;
+        }
+        if i + 4 <= n && rest.sub_string(i, 4) == " -> " {
+            if i == 0 { return (); }
+            let right = rest.sub_string(i + 4, n - (i + 4));
+            if right == "" { return (); }
+            return [rest.sub_string(0, i), right];
+        }
+        i += 1;
+    }
+    if in_quote { return (); }
+    [rest]
+}
+
+fn row_missing(index_col, work_col, paths) {
+    let missing = [];
+    if paths.len() == 2 {
+        if index_col == "R" || index_col == "C" {
+            missing.push(paths[0]);
+        }
+        return missing;
+    }
+    if paths.len() == 1 {
+        if work_col == "D" || index_col == "D" {
+            missing.push(paths[0]);
+        }
+    }
+    missing
+}
+
+fn dirty_row(line) {
+    if type_of(line) != "string" || trimmed(line) == "" || line.len() < 4 {
+        return ();
+    }
+    if line.sub_string(2, 1) != " " {
+        return ();
+    }
+    let parts = split_porcelain_paths(line.sub_string(3, line.len() - 3));
+    if parts == () { return (); }
+    let paths = [];
+    for token in parts {
+        let decoded = decode_porcelain_path(token);
+        if decoded == () { return (); }
+        let path = canonical_rel_path(decoded);
+        if bad_path(path) || list_has(paths, path) {
+            return ();
+        }
+        paths.push(path);
+    }
+    if paths.len() == 0 { return (); }
+    let index_col = line.sub_string(0, 1);
+    let work_col = line.sub_string(1, 1);
+    #{
+        paths: paths,
+        staged: index_col != " ",
+        missing: row_missing(index_col, work_col, paths),
+    }
+}
+
+fn dirty_entries(raw) {
+    let paths = [];
+    let staged = [];
+    let missing = [];
+    for item in as_array(raw) {
+        let row = dirty_row(item);
+        if row == () {
+            return #{ ok: false, paths: [], staged: [], missing: [] };
+        }
+        let row_paths = as_array(map_get(row, "paths"));
+        if row_paths.len() == 0 {
+            return #{ ok: false, paths: [], staged: [], missing: [] };
+        }
+        let row_staged = map_bool(row, "staged", false);
+        let gone = as_array(map_get(row, "missing"));
+        for path in row_paths {
+            if path == "" || list_has(paths, path) || paths.len() >= 32 {
+                return #{ ok: false, paths: [], staged: [], missing: [] };
+            }
+            paths.push(path);
+            if row_staged {
+                staged.push(path);
+            }
+            if list_has(gone, path) && !list_has(missing, path) {
+                missing.push(path);
+            }
+        }
+    }
+    #{ ok: true, paths: paths, staged: staged, missing: missing }
+}
+
+fn hex_chars(token) {
+    let n = token.len();
+    if n != 40 && n != 64 { return false; }
+    let hex = "0123456789abcdef";
+    let i = 0;
+    while i < n {
+        if !hex.contains(token.sub_string(i, 1)) { return false; }
+        i += 1;
+    }
+    true
+}
+
+// absent is only a stable snapshot of a missing worktree file.
+// A submodule directory uses sub:<hex>:clean or sub:<hex>:dirty.
+fn submodule_work(token) {
+    if type_of(token) != "string" || token.len() < 10 { return false; }
+    if token.sub_string(0, 4) != "sub:" { return false; }
+    let tail = "";
+    if token.len() >= 6 {
+        tail = token.sub_string(token.len() - 6, 6);
+    }
+    if tail != ":clean" && tail != ":dirty" { return false; }
+    hex_chars(token.sub_string(4, token.len() - 10))
+}
+
+fn hex_work(token) {
+    if token == "absent" { return true; }
+    if submodule_work(token) { return true; }
+    hex_chars(token)
+}
+
+fn work_for(works, path) {
+    if type_of(works) != "array" { return ""; }
+    for item in works {
+        if type_of(item) != "map" { continue; }
+        if map_str(item, "path") == path { return map_str(item, "work"); }
+    }
+    ""
+}
+
+fn work_rows(raw) {
+    let out = [];
+    for item in as_array(raw) {
+        if type_of(item) != "map" { return (); }
+        let path = canonical_rel_path(map_str(item, "path"));
+        let work = map_str(item, "work");
+        if bad_path(path) || !hex_work(work) || work_for(out, path) != "" { return (); }
+        out.push(#{ path: path, work: work });
+    }
+    out
+}
+
+fn keep_drift(keep_paths, before_staged, before_works, after_raw) {
+    if type_of(keep_paths) != "array" || keep_paths.len() == 0 { return ""; }
+    if before_works == () || type_of(before_works) != "array" { return "unreadable"; }
+    if after_raw == () || type_of(after_raw) != "map" { return "unreadable"; }
+    let after_entries = dirty_entries(map_get(after_raw, "paths"));
+    if map_bool(after_entries, "ok", false) != true { return "unreadable"; }
+    let after_works = work_rows(map_get(after_raw, "works"));
+    if after_works == () { return "unreadable"; }
+    let after_paths = as_array(map_get(after_entries, "paths"));
+    let after_staged = as_array(map_get(after_entries, "staged"));
+    let missing = as_array(map_get(after_entries, "missing"));
+    for path in keep_paths {
+        if !list_has(after_paths, path) { return "restored"; }
+        if list_has(before_staged, path) != list_has(after_staged, path) { return "staged"; }
+        let before = work_for(before_works, path);
+        let after = work_for(after_works, path);
+        if before == "" || after == "" { return "rewritten"; }
+        if before == "absent" || after == "absent" {
+            if before != after { return "rewritten"; }
+            if !list_has(missing, path) { return "unreadable"; }
+        } else if before != after {
+            return "rewritten";
+        }
+    }
+    ""
+}
+
+fn keep_note(code) {
+    if code == "" { return ""; }
+    if code == "restored" { return "A kept path was restored or dropped."; }
+    if code == "staged" { return "A kept path was staged."; }
+    if code == "rewritten" { return "A kept path was rewritten."; }
+    "Could not recheck kept paths."
+}
+
+fn staged_foreign_paths(staged, plan) {
+    let named = planned_paths(plan);
+    let out = [];
+    for path in as_array(staged) {
+        if !list_has(named, path) && !list_has(out, path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+fn keep_text(paths) {
+    if type_of(paths) != "array" || paths.len() == 0 {
+        return "If git status --porcelain --untracked-files=no is not empty before you edit, stop and set the proof flag false.\n";
+    }
+    let p = "These paths were already dirty. Do not stage, restore, or edit them:";
+    for path in paths {
+        p += "\n- ";
+        p += json_encode(path);
+    }
+    p += "\nThe test file and production files are expected once this step changes them. Any other path in git status --porcelain --untracked-files=no means stop and set the proof flag false.\n";
+    p += "The script stores each of these paths' index column and worktree hash. It copies them into a new git-directory backup before editing. If a later step changes one, it copies the bytes back and puts the saved index line back.\n";
     p
 }
 
-fn red_prompt(issue, plan, branch_name, trunk) {
+fn dirty_prompt() {
+    let p = "You check whether the git worktree has tracked changes. Do not edit, commit, or submit.\n";
+    p += guardrails_text();
+    p += tools_exec();
+    p += "Run git status --porcelain --untracked-files=no. When the output is empty, set clean true and paths to an empty array.\n";
+    p += "Otherwise set clean false. paths lists each porcelain line exactly, including the two-character status and the space after it. Do not trim a leading space. Do not drop the status. Do not include untracked files. A rename stays one line. Leave paths empty when you cannot copy every line.\n";
+    p += "works has one object per tracked path. path is the repo-relative path. work is the lowercase hex from git hash-object -- path. When the path is a submodule or other directory, do not use hash-object. Set work to sub: plus the lowercase hex from git -C path rev-parse HEAD, then :clean or :dirty. Use :dirty when git -C path status --porcelain is not empty. When the path is not a worktree file and not a directory, set work to absent. When clean is true, works is empty.\n";
+    p
+}
+
+fn keep_check_prompt(keep_paths) {
+    let p = "You recheck kept paths. Do not edit, stage, restore, commit, or submit.\n";
+    p += guardrails_text();
+    p += tools_exec();
+    p += "Run git status --porcelain --untracked-files=no. Set clean true only when that output is empty. Otherwise set clean false.\n";
+    p += "paths lists each porcelain line exactly, including the two-character status and the space after it. Do not trim a leading space. Do not drop the status. A rename stays one line.\n";
+    p += "works has one object per path in the packet. path is that repo-relative path. work is the lowercase hex from git hash-object -- path. When the path is a submodule or other directory, do not use hash-object. Set work to sub: plus the lowercase hex from git -C path rev-parse HEAD, then :clean or :dirty. Use :dirty when git -C path status --porcelain is not empty. When the path is not a worktree file and not a directory, set work to absent. Do not hash any other path.\n";
+    p += packet_line(#{ keep_paths: keep_paths });
+    p
+}
+
+fn keep_backup_prompt(keep_paths) {
+    let p = "You copy kept paths into the git directory. Do not edit, stage, restore, commit, or submit any worktree file.\n";
+    p += guardrails_text();
+    p += tools_exec();
+    p += "Run git rev-parse --absolute-git-dir. Create a new empty directory with mktemp -d. The template is that absolute directory plus /ship-next-issue-keep.XXXXXXXX. backup_root is the directory mktemp prints. Do not reuse a directory named ship-next-issue-keep or any directory that already has files.\n";
+    p += "For each path in the packet, leave the worktree unchanged. Write only one of path, path.absent, or path.submodule, and always write path.index.\n";
+    p += "When the path is a regular file or symlink, copy it to backup_root/path and create parent directories under backup_root only.\n";
+    p += "When the path is missing from the worktree, write an empty marker at backup_root/path.absent. Do not create the worktree path.\n";
+    p += "When the path is a directory and git -C path status --porcelain is not empty, or git -C path rev-parse HEAD fails, set backed_up false. Do not copy the directory.\n";
+    p += "When the path is a directory and that status is empty, write one line to backup_root/path.submodule and do not copy the directory. The line is sub: plus the lowercase hex from git -C path rev-parse HEAD, then :clean. Do not run git stash, checkout, reset, or clean.\n";
+    p += "Run git ls-files -s -- path. Write that single line to backup_root/path.index. When ls-files prints nothing, write an empty path.index.\n";
+    p += "Set backed_up true only when every path was copied or marked, every path.index was written, and no directory was dirty. Set backup_root to the new absolute directory. Its last component must be ship-next-issue-keep. plus only letters and digits, and the path must contain /.git/.\n";
+    p += packet_line(#{ keep_paths: keep_paths });
+    p
+}
+
+fn keep_restore_prompt(keep_paths, backup_root) {
+    let p = "You restore kept paths from a backup. Do not stage, commit, or submit.\n";
+    p += guardrails_text();
+    p += tools_exec();
+    p += "Touch only the paths in the packet.\n";
+    p += "When backup_root/path and backup_root/path.absent both exist, set restored false. Do not remove the worktree path.\n";
+    p += "When only backup_root/path exists, copy it onto the worktree path and replace the worktree bytes.\n";
+    p += "When only backup_root/path.absent exists, remove the worktree path if it exists.\n";
+    p += "When backup_root/path.submodule exists, read its one line. When the line ends with :clean, run git -C path checkout of the hex between sub: and :clean. When it ends with :dirty, do not checkout and set restored false.\n";
+    p += "Then put the saved index back for that path only. When backup_root/path.index has a line, pass that line to git update-index --index-info. When path.index is empty, run git rm --cached --ignore-unmatch -- path. Do not change any other index path. Do not commit, amend, or reset --hard.\n";
+    p += "Set restored true only when every worktree path matches its backup marker and git ls-files -s -- path matches path.index.\n";
+    p += packet_line(#{ keep_paths: keep_paths, backup_root: backup_root });
+    p
+}
+
+fn last_segment(path) {
+    let i = path.len();
+    while i > 0 {
+        i -= 1;
+        if path.sub_string(i, 1) == "/" {
+            return path.sub_string(i + 1, path.len() - (i + 1));
+        }
+    }
+    path
+}
+
+fn backup_token_ok(token) {
+    if token.len() < 6 || token.len() > 32 { return false; }
+    let i = 0;
+    while i < token.len() {
+        let ch = token.sub_string(i, 1);
+        let ok = (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || (ch >= "0" && ch <= "9");
+        if !ok { return false; }
+        i += 1;
+    }
+    true
+}
+
+fn backup_root_ok(path) {
+    if type_of(path) != "string" { return false; }
+    let p = trimmed(path);
+    if p == "" || p.sub_string(0, 1) != "/" { return false; }
+    if p.contains("..") || control_path(p) { return false; }
+    if !p.contains("/.git/") { return false; }
+    let name = last_segment(p);
+    let prefix = "ship-next-issue-keep.";
+    if name.len() <= prefix.len() { return false; }
+    if name.sub_string(0, prefix.len()) != prefix { return false; }
+    backup_token_ok(name.sub_string(prefix.len(), name.len() - prefix.len()))
+}
+
+fn keep_backup(keep_paths, schema) {
+    if type_of(keep_paths) != "array" || keep_paths.len() == 0 { return ""; }
+    let backup_r = agent(
+        keep_backup_prompt(keep_paths),
+        #{ label: "keep-backup", capability_mode: "execute", output_schema: schema }
+    );
+    let backup = agent_map(backup_r);
+    if backup == () || !map_bool(backup, "backed_up", false) { return (); }
+    let root = map_str(backup, "backup_root");
+    if !backup_root_ok(root) { return (); }
+    root
+}
+
+fn keep_restore(keep_paths, backup_root, schema) {
+    if backup_root == "" { return "No backup was available."; }
+    let restore_r = agent(
+        keep_restore_prompt(keep_paths, backup_root),
+        #{ label: "keep-restore", capability_mode: "execute", output_schema: schema }
+    );
+    let restore = agent_map(restore_r);
+    if restore == () || !map_bool(restore, "restored", false) {
+        return "Restore failed. Original bytes are in " + backup_root + ".";
+    }
+    "Restored kept paths from backup."
+}
+
+fn keep_guard(step, keep_paths, before_staged, before_works, schema) {
+    if type_of(keep_paths) != "array" || keep_paths.len() == 0 { return ""; }
+    let guard_r = agent(
+        keep_check_prompt(keep_paths),
+        #{ label: "keep-" + step, capability_mode: "execute", output_schema: schema }
+    );
+    keep_note(keep_drift(keep_paths, before_staged, before_works, agent_map(guard_r)))
+}
+
+fn red_prompt(issue, plan, branch_name, trunk, keep_paths) {
     let p = "You create one Graphite branch and add a failing test. Do not implement the fix. Do not commit. Do not submit.\n";
     p += guardrails_text();
     p += tools_exec();
-    p += "If git status --porcelain --untracked-files=no is not empty, set red_proven false and stop.\n";
+    p += keep_text(keep_paths);
     p += "Create branch_name from trunk. When the current branch is trunk, run gt --no-interactive branch create branch_name with no -a, -u, -m, or --all.\n";
     p += "When it is not trunk, gt --no-interactive checkout trunk, then that branch create. If checkout fails because trunk is checked out in another worktree, do not touch that checkout. Use git switch -c branch_name trunk and then gt track --parent trunk --no-interactive. git switch -c is allowed only for that case.\n";
     p += "Then gt branch info. The parent must be trunk. If it is not, set red_proven false and stop.\n";
@@ -376,18 +1235,39 @@ fn red_prompt(issue, plan, branch_name, trunk) {
         test_file: map_str(plan, "test_file"),
         test_command: map_str(plan, "test_command"),
         summary: map_str(plan, "summary"),
+        keep_paths: keep_paths,
     });
     p
 }
 
-fn green_prompt(issue, plan, branch_name) {
+fn green_keep_text(plan, paths) {
+    let p = "test_file may already be dirty from the red stage. That path is allowed";
+    if type_of(paths) != "array" || paths.len() == 0 {
+        p += " even when no other path was dirty at the start.\n";
+    } else {
+        p += ".\nThese paths were already dirty. Do not stage, restore, or edit them:";
+        for path in paths {
+            p += "\n- ";
+            p += json_encode(path);
+        }
+        p += "\n";
+    }
+    p += "Any other tracked path in git status --porcelain --untracked-files=no means stop and set green_proven false.\n";
+    p += "The script stores each kept path's index column and worktree hash. It stops when this step restores, rewrites, stages, or drops one.\n";
+    p += "Before gt modify --commit, run git status --porcelain --untracked-files=no again. ";
+    p += "If a path other than test_file and production_files has an index column other than a space, do not commit and set green_proven false. Leave unstaged paths unstaged.\n";
+    p
+}
+
+fn green_prompt(issue, plan, branch_name, keep_paths) {
     let p = "You make one failing test pass. Do not submit.\n";
     p += guardrails_text();
     p += tools_exec();
+    p += green_keep_text(plan, keep_paths);
     p += "Stay on branch_name. Edit only test_file and production_files. Do not delete the failing test.\n";
     p += "Run test_command exactly. Set green_proven true only when it exits 0. Put a short passing excerpt in pass_excerpt.\n";
     p += "When it fails, do not commit and set green_proven false.\n";
-    p += "When it passes, stage only those named paths. Commit with gt --no-interactive modify --commit -m. Use commit_type as the conventional prefix. Put Refs IDENTIFIER in the body. Do not write Fixes, Closes, or Resolves. Do not amend.\n";
+    p += "When it passes, stage only those named paths. Each staged path must be one literal file. Do not stage a directory, a glob, or a pathspec. Commit with gt --no-interactive modify --commit -m. Use commit_type as the conventional prefix. Put Refs IDENTIFIER in the body. Do not write Fixes, Closes, or Resolves. Do not amend.\n";
     p += packet_line(#{
         identifier: map_str(issue, "identifier"),
         branch_name: branch_name,
@@ -396,6 +1276,7 @@ fn green_prompt(issue, plan, branch_name) {
         test_file: map_str(plan, "test_file"),
         test_command: map_str(plan, "test_command"),
         production_files: map_get(plan, "production_files"),
+        keep_paths: keep_paths,
     });
     p
 }
@@ -429,7 +1310,7 @@ fn finding_skeptic_prompt(finding) {
     p
 }
 
-fn repair_prompt(issue, plan, branch_name, findings, file_limit) {
+fn repair_prompt(issue, plan, branch_name, findings, file_limit, keep_paths) {
     let files = [];
     for f in findings {
         let path = map_str(f, "file");
@@ -440,15 +1321,17 @@ fn repair_prompt(issue, plan, branch_name, findings, file_limit) {
     let p = "You fix accepted review findings on one Graphite branch. Do not run gt submit. Do not create a pull request.\n";
     p += guardrails_text();
     p += tools_exec();
+    p += keep_text(keep_paths);
     p += "Checkout branch_name with gt --no-interactive checkout. Edit only the files in the packet. Run test_command exactly.\n";
     p += "When it fails, do not commit. Set green_proven false.\n";
-    p += "When it passes, stage only those files and run gt --no-interactive modify --commit -m with a fix: message that contains Refs IDENTIFIER. Do not amend. Set green_proven true.\n";
+    p += "When it passes, stage only those files. Each staged path must be one literal file. Do not stage a directory, a glob, or a pathspec. Run gt --no-interactive modify --commit -m with a fix: message that contains Refs IDENTIFIER. Do not amend. Set green_proven true.\n";
     p += packet_line(#{
         identifier: map_str(issue, "identifier"),
         branch_name: branch_name,
         test_command: map_str(plan, "test_command"),
         files: files,
         findings: findings,
+        keep_paths: keep_paths,
     });
     p
 }
@@ -509,19 +1392,21 @@ fn bot_reply_prompt(pr, replies) {
     p
 }
 
-fn bot_fix_prompt(issue, plan, branch_name, files, threads) {
+fn bot_fix_prompt(issue, plan, branch_name, files, threads, keep_paths) {
     let p = "You apply one bot-comment fix on the current pull request. Do not reply. Do not resolve. Do not submit.\n";
     p += guardrails_text();
     p += tools_exec();
+    p += keep_text(keep_paths);
     p += "Checkout branch_name. Edit only the files in the packet. Run test_command exactly. This is the one fix attempt.\n";
     p += "When the test fails, do not commit. Set green_proven false.\n";
-    p += "When it passes, stage named paths only and gt --no-interactive modify --commit -m with a fix: message that contains Refs IDENTIFIER. Do not amend. Set green_proven true.\n";
+    p += "When it passes, stage named paths only. Each staged path must be one literal file. Do not stage a directory, a glob, or a pathspec. Run gt --no-interactive modify --commit -m with a fix: message that contains Refs IDENTIFIER. Do not amend. Set green_proven true.\n";
     p += packet_line(#{
         identifier: map_str(issue, "identifier"),
         branch_name: branch_name,
         test_command: map_str(plan, "test_command"),
         files: files,
         threads: threads,
+        keep_paths: keep_paths,
     });
     p
 }
@@ -643,13 +1528,45 @@ let verdict_schema = #{
     },
 };
 
+let keep_backup_schema = #{
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["backed_up", "backup_root"],
+    "properties": #{
+        "backed_up": #{ "type": "boolean" },
+        "backup_root": #{ "type": "string" },
+    },
+};
+
+let keep_restore_schema = #{
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["restored"],
+    "properties": #{
+        "restored": #{ "type": "boolean" },
+    },
+};
+
 let dirty_schema = #{
     "type": "object",
     "additionalProperties": false,
-    "required": ["clean", "evidence"],
+    "required": ["clean", "paths", "works"],
     "properties": #{
         "clean": #{ "type": "boolean" },
-        "evidence": #{ "type": "string" },
+        "paths": #{ "type": "array", "maxItems": 32, "items": #{ "type": "string" } },
+        "works": #{
+            "type": "array",
+            "maxItems": 32,
+            "items": #{
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["path", "work"],
+                "properties": #{
+                    "path": #{ "type": "string" },
+                    "work": #{ "type": "string" },
+                },
+            },
+        },
     },
 };
 
@@ -879,6 +1796,9 @@ while tries < MAX_TRIES && plan == () {
                             log("dropped " + prod.dropped.to_string() + " plan paths");
                         }
                         plan_out.production_files = prod.paths;
+                        if !plan_literals(plan_out) {
+                            plan_why = "Plan named a directory or pathspec, not a literal file.";
+                        } else {
                         let skeptic_r = agent(
                             plan_skeptic_prompt(candidate, plan_out, focus),
                             #{ label: "plan-skeptic:" + candidate_id, capability_mode: "read-only", output_schema: verdict_schema }
@@ -894,6 +1814,7 @@ while tries < MAX_TRIES && plan == () {
                             plan = plan_out;
                             ready_evidence = map_str(eval_out, "evidence");
                             context_summary = map_str(context_out, "summary");
+                        }
                         }
                     }
                 }
@@ -935,24 +1856,100 @@ if do_confirm {
 phase("Implement");
 let dirty_r = agent(dirty_prompt(), #{ label: "dirty", capability_mode: "execute", output_schema: dirty_schema });
 let dirty = agent_map(dirty_r);
-if dirty == () || !map_bool(dirty, "clean", false) {
-    notes.push(note_row("implement", "Worktree has tracked changes. Commit or stash them, then run again."));
+if dirty == () {
+    notes.push(note_row("implement", "Could not read tracked changes. Nothing was edited."));
     finish(notes);
 }
+let entries = dirty_entries(map_get(dirty, "paths"));
+if map_bool(entries, "ok", false) != true {
+    notes.push(note_row("implement", "Tracked changes were not a list of safe paths. Nothing was edited."));
+    finish(notes);
+}
+let keep_paths = as_array(map_get(entries, "paths"));
+if map_bool(dirty, "clean", false) {
+    if keep_paths.len() != 0 {
+        notes.push(note_row("implement", "Clean status listed paths. Nothing was edited."));
+        finish(notes);
+    }
+} else if keep_paths.len() == 0 {
+    notes.push(note_row("implement", "Tracked changes had no paths. Nothing was edited."));
+    finish(notes);
+} else {
+    let blocking = blocking_paths(keep_paths, plan);
+    if blocking.len() > 0 {
+        let why = "Tracked changes overlap the planned files.";
+        for path in blocking {
+            why += " ";
+            why += path;
+            why += ".";
+        }
+        why += " Commit or stash those paths, then run again.";
+        notes.push(note_row("implement", why));
+        finish(notes);
+    }
+    let staged_foreign = staged_foreign_paths(map_get(entries, "staged"), plan);
+    if staged_foreign.len() > 0 {
+        let why = "A non-planned path is already staged.";
+        for path in staged_foreign {
+            why += " ";
+            why += path;
+            why += ".";
+        }
+        why += " Unstage it, then run again.";
+        notes.push(note_row("implement", why));
+        finish(notes);
+    }
+    let ignored = "Left pre-existing tracked changes unstaged.";
+    for path in keep_paths {
+        ignored += " ";
+        ignored += path;
+        ignored += ".";
+    }
+    notes.push(note_row("implement", ignored));
+}
+let before_works = [];
+let backup_root = "";
+if keep_paths.len() != 0 {
+    before_works = work_rows(map_get(dirty, "works"));
+    let snap = "unreadable";
+    if before_works != () {
+        snap = keep_drift(keep_paths, map_get(entries, "staged"), before_works, dirty);
+    }
+    if snap != "" {
+        notes.push(note_row("implement", keep_note(snap) + " Nothing was edited."));
+        finish(notes);
+    }
+    let backed = keep_backup(keep_paths, keep_backup_schema);
+    if backed == () || backed == "" {
+        notes.push(note_row("implement", "Could not back up kept paths. Nothing was edited."));
+        finish(notes);
+    }
+    backup_root = backed;
+}
 let red_r = agent(
-    red_prompt(chosen, plan, branch_name, trunk),
+    red_prompt(chosen, plan, branch_name, trunk, keep_paths),
     #{ label: "red", capability_mode: "all", output_schema: red_schema }
 );
 let red = agent_map(red_r);
+let red_keep = keep_guard("red", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
+if red_keep != "" {
+    notes.push(note_row("implement", red_keep + " " + keep_restore(keep_paths, backup_root, keep_restore_schema)));
+    finish(notes);
+}
 if red == () || !map_bool(red, "red_proven", false) {
     notes.push(note_row("implement", "The new test did not fail for the missing behavior."));
     finish(notes);
 }
 let green_r = agent(
-    green_prompt(chosen, plan, branch_name),
+    green_prompt(chosen, plan, branch_name, keep_paths),
     #{ label: "green", capability_mode: "all", output_schema: green_schema }
 );
 let green = agent_map(green_r);
+let green_keep = keep_guard("green", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
+if green_keep != "" {
+    notes.push(note_row("implement", green_keep + " " + keep_restore(keep_paths, backup_root, keep_restore_schema)));
+    finish(notes);
+}
 if green == () || !map_bool(green, "green_proven", false) {
     notes.push(note_row("implement", "The test did not pass. Nothing was submitted."));
     finish(notes);
@@ -1035,10 +2032,15 @@ let pr_number = 0;
 let pr_url = "";
 if confirmed.len() > 0 {
     let repair_r = agent(
-        repair_prompt(chosen, plan, branch_name, confirmed, MAX_FILES),
+        repair_prompt(chosen, plan, branch_name, confirmed, MAX_FILES, keep_paths),
         #{ label: "repair", capability_mode: "all", output_schema: green_schema }
     );
     let repair = agent_map(repair_r);
+    let repair_keep = keep_guard("repair", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
+    if repair_keep != "" {
+        notes.push(note_row("fix", repair_keep + " " + keep_restore(keep_paths, backup_root, keep_restore_schema)));
+        finish(notes);
+    }
     if repair == () || !map_bool(repair, "green_proven", false) {
         notes.push(note_row("fix", "Accepted findings were not fixed to a passing test. Not submitted."));
         finish(notes);
@@ -1131,10 +2133,15 @@ if replies.len() > 0 {
 }
 if fixes.len() > 0 {
     let fix_r = agent(
-        bot_fix_prompt(chosen, plan, branch_name, fix_files, fixes),
+        bot_fix_prompt(chosen, plan, branch_name, fix_files, fixes, keep_paths),
         #{ label: "bot-fix", capability_mode: "all", output_schema: green_schema }
     );
     let fix_out = agent_map(fix_r);
+    let bot_keep = keep_guard("bot", keep_paths, map_get(entries, "staged"), before_works, dirty_schema);
+    if bot_keep != "" {
+        notes.push(note_row("bots", bot_keep + " " + keep_restore(keep_paths, backup_root, keep_restore_schema)));
+        finish(notes);
+    }
     if fix_out != () && map_bool(fix_out, "green_proven", false) {
         let pub_r = agent(
             bot_publish_prompt(chosen, branch_name, resolve_ids),
