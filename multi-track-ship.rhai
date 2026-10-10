@@ -253,6 +253,10 @@ fn rel_dir(raw) {
     text
 }
 
+fn keep_selected_dir(selected, reported) {
+    selected
+}
+
 fn visual_hint_for(cmd, dir) {
     let command = trimmed(cmd);
     if command != "" { return "Prefer visual command: " + command; }
@@ -288,6 +292,9 @@ fn hint_self_check() {
     let perf_fallback = perf_hint_for("", "qa/feature");
     if !perf_fallback.contains("Launch_benchmark") { return "perf default"; }
     if !perf_fallback.contains("qa/feature/") { return "perf dir"; }
+    if keep_selected_dir("qa/feature", "qa/other") != "qa/feature" { return "qa replace"; }
+    if keep_selected_dir("qa/feature", "") != "qa/feature" { return "qa empty"; }
+    if keep_selected_dir("qa/feature", "qa/feature") != "qa/feature" { return "qa same"; }
     ""
 }
 
@@ -517,7 +524,12 @@ let written_plan = if plan.plan_path != () && trimmed(plan.plan_path) != "" {
     plan_path
 };
 let plan_goal = if plan.goal != () { plan.goal } else { goal_text };
-if plan.qa_dir != () && trimmed(plan.qa_dir) != "" { qa_dir = trimmed(plan.qa_dir); }
+let reported_dir = "";
+if plan.qa_dir != () { reported_dir = trimmed(plan.qa_dir); }
+if reported_dir != "" && reported_dir != qa_dir {
+    log("Planner qa_dir " + reported_dir + " differs from selected " + qa_dir + "; keeping the selected directory");
+}
+qa_dir = keep_selected_dir(qa_dir, reported_dir);
 if plan.pipeline_mode != () && trimmed(plan.pipeline_mode) != "" {
     let pm = trimmed(plan.pipeline_mode);
     if pm == "after_each" || pm == "batch" || pm == "both" { pipeline_mode = pm; }
