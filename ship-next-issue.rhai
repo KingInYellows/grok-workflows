@@ -1,7 +1,7 @@
 let meta = #{
     name: "ship-next-issue",
     description: "Pick the next open issue in any git repo, implement it, review it, submit one Graphite PR, and take one bot-comment pass",
-    when_to_use: "Any git checkout. Picks the next completable open issue for the Linear team matching the origin repo name, or args.issue. When args.issue is empty, args.query is used only when the whole value is an issue key such as GOAL-27. Current cycle first, then other open team issues. Drops epics, open blockers, and needs-owner unless that key names the issue. Submits one Graphite PR unless args.submit is false. One bot-comment pass after submit, not a long-lived watcher. Never merges. Tracked changes that do not overlap the planned files stay unstaged. /ship-next-issue or /workflow ship-next-issue.",
+    when_to_use: "Any git checkout. Picks the next completable open issue for the Linear team matching the origin repo name, or args.issue. When args.issue is empty, args.query is used only when the whole value is an issue key such as GOAL-27. A nonempty args.issue that is not a key stops the run. Current cycle first, then other open team issues. Drops epics, open blockers, and needs-owner unless that key names the issue. Submits one Graphite PR unless args.submit is false. One bot-comment pass after submit, not a long-lived watcher. Never merges. Tracked changes that do not overlap the planned files stay unstaged. /ship-next-issue or /workflow ship-next-issue.",
     phases: [
         #{ title: "Select", detail: "page open issues, then rank" },
         #{ title: "Evaluate", detail: "reject work one PR cannot finish" },
@@ -133,6 +133,16 @@ fn named_issue(args_map) {
     let explicit = map_str(args_map, "issue");
     if explicit != "" { return issue_key(explicit); }
     issue_key(map_str(args_map, "query"))
+}
+
+// A nonempty args.issue that is not a key is a caller error. Query
+// prose is not: that path is how the slash command stores free text.
+fn named_issue_error(args_map) {
+    if args_map == () || type_of(args_map) != "map" { return ""; }
+    let explicit = map_str(args_map, "issue");
+    if explicit == "" { return ""; }
+    if issue_key(explicit) != "" { return ""; }
+    "args.issue is not a Linear issue key."
 }
 
 fn map_bool(m, key, fallback) {
@@ -490,6 +500,10 @@ fn self_check() {
     if named_issue(#{ query: " goal-27 " }) != "GOAL-27" { return "query issue"; }
     if named_issue(#{ query: "fix the flaky test" }) != "" { return "query prose"; }
     if named_issue(#{ issue: "soon", query: "GOAL-27" }) != "" { return "bad issue ignores query"; }
+    if named_issue_error(#{ issue: "soon", query: "GOAL-27" }) == "" { return "bad issue error"; }
+    if named_issue_error(#{ query: "soon" }) != "" { return "query prose error"; }
+    if named_issue_error(#{ issue: "GOAL-27" }) != "" { return "good issue error"; }
+    if named_issue_error(()) != "" { return "empty args error"; }
     if named_issue(()) != "" { return "empty args"; }
     if issue_key("GOAL-") != "" { return "issue key trailing dash"; }
     if issue_key("1GOAL-2") != "" { return "issue key leading digit"; }
@@ -1904,6 +1918,10 @@ let team_override = "";
 let do_submit = true;
 let do_confirm = false;
 if args != () {
+    let issue_error = named_issue_error(args);
+    if issue_error != "" {
+        finish([note_row("select", issue_error)]);
+    }
     only_issue = named_issue(args);
     team_override = map_str(args, "team");
     do_submit = map_bool(args, "submit", true);
