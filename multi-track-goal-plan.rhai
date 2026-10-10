@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-goal-plan",
-    description: "Review the repo and open issues, pick the next multi-area goal, and write the file that launches multi-track-plan. Does not implement. Version 1.1.0.",
+    description: "Review the repo and open issues, pick the next multi-area goal, and write the file that launches multi-track-plan. Does not implement. Version 1.1.1.",
     when_to_use: "First step of the multi-track chain. With no args.goal, chooses the next multi-area goal from the repo and open GitHub or Linear issues. Pass args.goal to lock the sentence. Writes plans/multi-track-goal.md. A single-area result names implement-from-plan. Not goal-planning and not goal-execute.",
     phases: [
         #{ title: "Choose", detail: "pick the next multi-area goal from the repo and open issues" },
@@ -187,8 +187,20 @@ fn as_int(value, fallback, lo, hi) {
 
 fn clip(s, n) {
     let text = trimmed(s);
-    if text.len() > n { return text.sub_string(0, n); }
-    text
+    if text.len() <= n { return text; }
+    let cut = n;
+    let i = n;
+    let floor = 0;
+    if n > 40 { floor = n - 40; }
+    let found = false;
+    while i > floor && !found {
+        i -= 1;
+        if text.sub_string(i, 1) == " " {
+            cut = i;
+            found = true;
+        }
+    }
+    trimmed(text.sub_string(0, cut))
 }
 
 fn one_line(s) {
@@ -317,7 +329,7 @@ fn clean_lines(raw, cap) {
     let out = [];
     let dropped = 0;
     for item in as_array(raw) {
-        let text = clip(one_line(item), 300);
+        let text = clip(one_line(item), 1200);
         if text == "" {
         } else {
             let seen = false;
@@ -384,7 +396,7 @@ fn normalize_areas(raw, max_areas) {
                 let title = clip(one_line(map_str(item, "title")), 120);
                 if title == "" { title = id; }
                 let pri = as_int(map_get(item, "priority"), 50, 1, 100);
-                let why = clip(one_line(map_str(item, "why")), 300);
+                let why = clip(one_line(map_str(item, "why")), 1200);
                 pending.push(#{ id: id, title: title, priority: pri, paths: files.paths, why: why });
             }
         }
@@ -620,6 +632,9 @@ fn self_check() {
     if !accept_write(true, true, true) { return "accept write"; }
     if !evidence_has_goal("Ship two areas.", "Ship two areas.") { return "goal evidence"; }
     if evidence_has_goal("old goal", "Ship two areas.") { return "stale goal"; }
+    let cut = clip("alpha beta gamma delta epsilon", 24);
+    if cut != "alpha beta gamma delta" { return "clip word"; }
+    if clip("short words", 40) != "short words" { return "clip short"; }
     ""
 }
 
@@ -756,7 +771,7 @@ if goal_text != "" {
     let chosen = choose_r.output;
     if is_canned(chosen) { finish_smoke(); }
     goal_text = take_goal(map_get(chosen, "goal"));
-    goal_why = clip(one_line(map_str(chosen, "why")), 500);
+    goal_why = clip(one_line(map_str(chosen, "why")), 1200);
     goal_source = clip(one_line(map_str(chosen, "source")), 160);
     let seen = clean_lines(map_get(chosen, "issues_seen"), 12);
     issue_lines = seen.lines;
@@ -903,7 +918,7 @@ for row in skeptic_rows {
         skeptic_miss += 1;
         if row != () && row.output != () {
             for reason in as_array(map_get(row.output, "reasons")) {
-                let text = clip(one_line(reason), 300);
+                let text = clip(one_line(reason), 1200);
                 if text != "" { reason_lines.push(text); }
             }
         } else {
