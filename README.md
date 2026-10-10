@@ -76,7 +76,7 @@ cd ~/projects/grok-workflows
 ./scripts/update-workflows.sh --no-pull  # copy the current tree only
 ```
 
-A dry run fetches but does not merge. If the remote is ahead, copy actions are previewed from that revision, not from the unchanged checkout. `git fetch` is bounded (120s by default, `UPDATE_WORKFLOWS_FETCH_TIMEOUT`) so a stalled remote cannot hold the lock.
+A dry run fetches but does not merge. If the remote is ahead, copy actions are previewed from that revision, not from the unchanged checkout. `git fetch` is bounded (120s by default, `UPDATE_WORKFLOWS_FETCH_TIMEOUT`). If it ignores TERM, it is killed after a further 10s (`UPDATE_WORKFLOWS_FETCH_KILL_AFTER`) so a stalled remote cannot hold the lock.
 
 Cron example (runs only while WSL is up):
 

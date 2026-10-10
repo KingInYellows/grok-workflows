@@ -23,7 +23,8 @@ Options:
   -h, --help  Show this help
 
 Exits non-zero if the clone is not on main, is dirty, cannot fast-forward,
-or git fetch exceeds the timeout.
+or git fetch exceeds the timeout. A fetch that ignores SIGTERM is killed
+after UPDATE_WORKFLOWS_FETCH_KILL_AFTER seconds (default 10).
 EOF
 }
 
@@ -50,6 +51,7 @@ ROOT="${UPDATE_WORKFLOWS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 REMOTE="${UPDATE_WORKFLOWS_REMOTE:-origin}"
 BRANCH="${UPDATE_WORKFLOWS_BRANCH:-main}"
 FETCH_TIMEOUT="${UPDATE_WORKFLOWS_FETCH_TIMEOUT:-120}"
+FETCH_KILL_AFTER="${UPDATE_WORKFLOWS_FETCH_KILL_AFTER:-10}"
 
 log() {
   printf '%s %s\n' "$(date -Is)" "$*"
@@ -94,6 +96,7 @@ cd "$ROOT"
 [[ -d "$ROOT/.git" ]] || die "not a git clone: $ROOT"
 [[ -x "$ROOT/sync-workflows.sh" ]] || die "missing $ROOT/sync-workflows.sh"
 [[ "$FETCH_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "UPDATE_WORKFLOWS_FETCH_TIMEOUT must be a positive number of seconds"
+[[ "$FETCH_KILL_AFTER" =~ ^[1-9][0-9]*$ ]] || die "UPDATE_WORKFLOWS_FETCH_KILL_AFTER must be a positive number of seconds"
 command -v timeout >/dev/null 2>&1 || die "timeout(1) is required so git fetch cannot hold the lock"
 
 current="$(git symbolic-ref --quiet --short HEAD || true)"
@@ -133,12 +136,103 @@ run_sync() {
   fi
 }
 
+# True when a fetch child still shares our process group.
+# timeout(1) joins this group, and ps/awk appear in their own snapshot.
+group_has_others() {
+  local pgid snapshot
+  pgid="$(ps -o pgid= -p "$$" | tr -d " ")"
+  snapshot="$(ps -eo pid=,pgid=,comm=)"
+  awk -v pgid="$pgid" -v self="$$" '
+    $2 == pgid && $1 != self && $3 != "ps" && $3 != "awk" && $3 != "timeout" { found = 1 }
+    END { exit found ? 0 : 1 }
+  ' <<<"$snapshot"
+}
+
+# root plus every process whose parent chain still reaches it.
+descendant_pids() {
+  ps -eo pid=,ppid= | awk -v root="$1" '
+    { pp[$1] = $2 }
+    END {
+      for (pid in pp) {
+        p = pid
+        seen = 0
+        while (p && p != root && seen < 30) {
+          p = pp[p]
+          seen++
+        }
+        if (pid == root || p == root) print pid
+      }
+    }
+  '
+}
+
+# Child of timeout(1). TERM is the first signal. A transport that ignores it,
+# even from another process group, is killed after the grace period.
+fetch_in_timeout() {
+  local remote="$1"
+  local grace="$2"
+  local pid="" status="" timed_out=0 state=""
+  local -a tree=()
+  local -a alive=()
+  local p
+  trap 'timed_out=1' TERM
+  git fetch --prune --quiet "$remote" &
+  pid=$!
+  while true; do
+    if [[ -z "$status" ]]; then
+      state="$(ps -o stat= -p "$pid" 2>/dev/null | awk '{print substr($1,1,1)}')"
+      # A zombie still passes kill -0. Reap it before the tree check.
+      if [[ -z "$state" || "$state" == "Z" ]]; then
+        wait "$pid" && status=0 || status=$?
+      else
+        tree=()
+        while read -r p; do
+          [[ -n "$p" ]] && tree+=("$p")
+        done < <(descendant_pids "$pid")
+      fi
+    fi
+    alive=()
+    for p in "${tree[@]}"; do
+      if kill -0 "$p" 2>/dev/null; then
+        alive+=("$p")
+      fi
+    done
+    if [[ "$timed_out" -eq 1 || ( -n "$status" && ${#alive[@]} -gt 0 ) ]]; then
+      for p in "${alive[@]}"; do
+        kill -TERM "$p" 2>/dev/null || true
+      done
+      # New session: timeout's later KILL does not cancel this deadline.
+      # Close the lock fd so the killer itself does not hold the flock.
+      # shellcheck disable=SC2016 # inner shell expands $1 and $@
+      setsid -f bash -c 'exec 9>&-; sleep "$1"; shift; for p in "$@"; do kill -KILL "$p" 2>/dev/null || true; done' \
+        bash "$grace" "${alive[@]}" </dev/null >/dev/null 2>&1 || true
+      exit 124
+    fi
+    if [[ -n "$status" && ${#alive[@]} -eq 0 ]] && ! group_has_others; then
+      exit "$status"
+    fi
+    sleep 0.2
+  done
+}
+
 if [[ "$NO_PULL" -eq 0 ]]; then
-  log "fetch  $REMOTE (timeout ${FETCH_TIMEOUT}s)"
-  timeout "$FETCH_TIMEOUT" git fetch --prune --quiet "$REMOTE" && fetch_status=0 || fetch_status=$?
+  log "fetch  $REMOTE (timeout ${FETCH_TIMEOUT}s, kill after ${FETCH_KILL_AFTER}s)"
+  # TERM first. If fetch or a transport child ignores it, KILL follows so the
+  # lock cannot be held past the grace period. KILL exits 137; TERM exits 124.
+  export -f group_has_others descendant_pids fetch_in_timeout
+  fetch_err="$(mktemp)"
+  (
+    timeout --kill-after="$FETCH_KILL_AFTER" "$FETCH_TIMEOUT" \
+      bash -c 'fetch_in_timeout "$@"' bash "$REMOTE" "$FETCH_KILL_AFTER"
+  ) 2>"$fetch_err" && fetch_status=0 || fetch_status=$?
+  # Bash reports SIGKILL of timeout(1) as "Killed"; the die below is the log line.
+  if [[ -s "$fetch_err" ]]; then
+    grep -Ev 'Killed[[:space:]]+timeout --kill-after=|^Terminated$|^Killed$' "$fetch_err" >&2 || true
+  fi
+  rm -f "$fetch_err"
   if [[ "$fetch_status" -ne 0 ]]; then
-    if [[ "$fetch_status" -eq 124 ]]; then
-      die "git fetch timed out after ${FETCH_TIMEOUT}s"
+    if [[ "$fetch_status" -eq 124 || "$fetch_status" -eq 137 ]]; then
+      die "git fetch timed out after ${FETCH_TIMEOUT}s (kill-after ${FETCH_KILL_AFTER}s)"
     fi
     die "git fetch failed (exit $fetch_status)"
   fi
