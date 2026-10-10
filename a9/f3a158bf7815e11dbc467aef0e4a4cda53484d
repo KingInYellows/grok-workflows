@@ -1,0 +1,18 @@
+README.md
+  h_6000354274ce50 70-90
+multi-track-plan.rhai
+  h_6000354274ce50 3,187-207,394,413-415,469,682-710,988,1106
+scripts/update-workflows.sh
+  h_6000354274ce50 1-286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a9f3a158bf7815e11dbc467aef0e4a4cda53484d",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
