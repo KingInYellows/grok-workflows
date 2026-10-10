@@ -528,10 +528,11 @@ fn quoted_cmd(out, command_key, source_key, quote_key) {
     cmd
 }
 
-fn ship_launch(source_plan, process_path, dir, mode, visual, perf) {
+fn ship_launch(source_plan, process_path, dir, mode, visual, perf, goal) {
     let line = "/workflow multi-track-ship {";
     line += "\"sources\":[" + json_encode(source_plan) + "]";
     line += ",\"plan_path\":" + json_encode(process_path);
+    line += ",\"goal\":" + json_encode(goal);
     line += ",\"qa_dir\":" + json_encode(dir);
     line += ",\"pipeline_mode\":" + json_encode(mode);
     if visual != "" { line += ",\"visual_command\":" + json_encode(visual); }
@@ -662,11 +663,13 @@ fn self_check() {
         visual_quote: "",
     }, "visual_command", "visual_source", "visual_quote");
     if dropped_cmd != "" { return "quoted drop"; }
-    let launch = ship_launch("plans/multi-track-source.md", "plans/multi-track-process.md", "qa/feature", "both", "pnpm test:visual", "");
+    let launch = ship_launch("plans/multi-track-source.md", "plans/multi-track-process.md", "qa/feature", "both", "pnpm test:visual", "", "Ship two areas.");
     if !launch.contains("multi-track-ship") { return "launch name"; }
     if !launch.contains("visual_command") { return "launch visual"; }
     if launch.contains("perf_command") { return "launch perf omitted"; }
     if !launch.contains("plans/multi-track-source.md") { return "launch source"; }
+    if !launch.contains("\"goal\"") { return "launch goal"; }
+    if !launch.contains("Ship two areas.") { return "launch goal text"; }
     ""
 }
 
@@ -1100,7 +1103,7 @@ if !wrote {
 }
 
 phase("Report");
-let launch = ship_launch(plan_path, "plans/multi-track-process.md", qa_dir, pipeline_mode, visual_cmd, perf_cmd);
+let launch = ship_launch(plan_path, "plans/multi-track-process.md", qa_dir, pipeline_mode, visual_cmd, perf_cmd, goal_text);
 
 let report = "";
 report += "# multi-track-plan report\n\n";
