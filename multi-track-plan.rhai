@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-plan",
-    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.1.",
+    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.2.",
     when_to_use: "Before /multi-track-ship, when a goal spans several areas and needs a source plan with tracks, file ownership, and file-backed QA commands. A multi-track-goal-plan file can be the source. Not for one file (implement-from-plan) or the next Linear issue (ship-next-issue).",
     phases: [
         #{ title: "Scope", detail: "read the goal, sources, and file-backed commands" },
@@ -182,8 +182,20 @@ fn as_int(value, fallback, lo, hi) {
 
 fn clip(s, n) {
     let text = trimmed(s);
-    if text.len() > n { return text.sub_string(0, n); }
-    text
+    if text.len() <= n { return text; }
+    let cut = n;
+    let i = n;
+    let floor = 0;
+    if n > 40 { floor = n - 40; }
+    let found = false;
+    while i > floor && !found {
+        i -= 1;
+        if text.sub_string(i, 1) == " " {
+            cut = i;
+            found = true;
+        }
+    }
+    trimmed(text.sub_string(0, cut))
 }
 
 fn one_line(s) {
@@ -312,7 +324,7 @@ fn clean_lines(raw, cap) {
     let out = [];
     let dropped = 0;
     for item in as_array(raw) {
-        let text = clip(one_line(item), 300);
+        let text = clip(one_line(item), 1200);
         if text == "" {
         } else {
             let seen = false;
@@ -657,9 +669,20 @@ fn command_blob(commands, visual_rec, perf_rec) {
 
 fn body_mark(body) {
     let n = body.len();
-    let tail = body;
-    if n > 48 { tail = body.sub_string(n - 48, 48); }
-    "<!-- plan-body " + n.to_string() + " " + one_line(tail) + " -->"
+    let sum = 0;
+    let i = 0;
+    while i < n {
+        sum += (i + 1) * body[i].to_int();
+        i += 1;
+    }
+    let head = body;
+    if n > 80 { head = body.sub_string(0, 80); }
+    let line = "<!-- plan-body " + n.to_string() + " " + sum.to_string() + " " + one_line(head);
+    if n > 160 {
+        let mid = body.sub_string(n / 3, 80);
+        line += " " + one_line(mid);
+    }
+    line + " -->"
 }
 
 fn write_claimed(row) {
@@ -818,6 +841,33 @@ fn self_check() {
     let mark = body_mark(md);
     if mark == "" || !mark.contains("plan-body") { return "body mark"; }
     if body_mark(md) != mark { return "body mark stable"; }
+    if clip("one two three four", 10) != "one two" { return "clip word"; }
+    let long_line = "";
+    let rep = 0;
+    while rep < 80 {
+        long_line += "word ";
+        rep += 1;
+    }
+    let long_kept = clean_lines([long_line], 4);
+    if long_kept.lines.len() != 1 || long_kept.lines[0].len() < 350 { return "long line"; }
+    let ending = "";
+    let zi = 0;
+    while zi < 48 {
+        ending += "Z";
+        zi += 1;
+    }
+    let pad = "";
+    let pi = 0;
+    while pi < 120 {
+        pad += "m";
+        pi += 1;
+    }
+    let mark_a = "AAA" + pad + "xxxx" + ending;
+    let mark_b = "AAA" + pad + "yyyy" + ending;
+    if mark_a.len() != mark_b.len() { return "mark length"; }
+    if mark_a.sub_string(mark_a.len() - 48, 48) != ending { return "mark tail"; }
+    if body_mark(mark_a) == body_mark(mark_b) { return "mark collide"; }
+    if body_mark(mark_a) != body_mark(mark_a) { return "mark stable pair"; }
     if write_claimed(#{ success: true, output: #{ wrote: false, plan_path: "plans/a.md", notes: "n" } }) {
         return "write false";
     }
@@ -1126,7 +1176,7 @@ cmd_prompt += fence();
 cmd_prompt += "You are the COMMAND SKEPTIC. Refute invented verify commands. Do not edit.\n";
 cmd_prompt += "Open each source_file and confirm the quote is really in that file.\n";
 cmd_prompt += "The list includes visual_command and perf_command lines when those records have a source and a quote.\n";
-cmd_prompt += "ok=true only when every listed command's quote is in its source file, or the list is empty.\n";
+cmd_prompt += "ok=true only when the quoted text defines, names, or otherwise documents that exact command, or the list is empty. A genuine but unrelated quote from the same file is ok=false, and that command goes in rejected.\n";
 cmd_prompt += "When ok=false, put every failed command string in rejected. An empty rejected list with ok=false is still a failure.\n";
 cmd_prompt += "Commands:\n" + cmd_blob;
 cmd_prompt += "evidence must quote the file line or say the list is empty. Otherwise ok=false.\n";
@@ -1200,7 +1250,7 @@ if !command_ok {
         again_prompt += "You are the COMMAND SKEPTIC. Refute invented verify commands. Do not edit.\n";
         again_prompt += "Open each source_file and confirm the quote is really in that file.\n";
         again_prompt += "The list includes visual_command and perf_command lines when those records have a source and a quote.\n";
-        again_prompt += "ok=true only when every listed command's quote is in its source file, or the list is empty.\n";
+        again_prompt += "ok=true only when the quoted text defines, names, or otherwise documents that exact command, or the list is empty. A genuine but unrelated quote from the same file is ok=false, and that command goes in rejected.\n";
         again_prompt += "When ok=false, put every failed command string in rejected. An empty rejected list with ok=false is still a failure.\n";
         again_prompt += "Commands:\n" + cmd_blob;
         again_prompt += "evidence must quote the file line or say the list is empty. Otherwise ok=false.\n";
@@ -1285,7 +1335,7 @@ if skeptic_miss == 0 {
             re_cmd_prompt += "You are the COMMAND SKEPTIC. Refute invented verify commands. Do not edit.\n";
             re_cmd_prompt += "Open each source_file and confirm the quote is really in that file.\n";
             re_cmd_prompt += "The list includes visual_command and perf_command lines when those records have a source and a quote.\n";
-            re_cmd_prompt += "ok=true only when every listed command's quote is in its source file, or the list is empty.\n";
+            re_cmd_prompt += "ok=true only when the quoted text defines, names, or otherwise documents that exact command, or the list is empty. A genuine but unrelated quote from the same file is ok=false, and that command goes in rejected.\n";
             re_cmd_prompt += "When ok=false, put every failed command string in rejected. An empty rejected list with ok=false is still a failure.\n";
             re_cmd_prompt += "Commands:\n" + cmd_blob;
             re_cmd_prompt += "evidence must quote the file line or say the list is empty. Otherwise ok=false.\n";
@@ -1321,8 +1371,7 @@ if skeptic_miss == 0 {
                 revised_ok = true;
             }
         } else {
-            log("Revise returned fewer than 2 tracks — keeping the draft");
-            unresolved.push("revise did not produce two tracks; draft kept");
+            pause("verification", "Revision left fewer than 2 tracks. Single-area work belongs on implement-from-plan. No source plan written.");
         }
     } else {
         log("Revise agent failed — keeping the draft");
