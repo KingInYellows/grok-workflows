@@ -1,0 +1,16 @@
+README.md
+  h_6000354274ce50 75,79-80
+scripts/update-workflows.sh
+  h_6000354274ce50 19-21,25-26,45-47,52,63-85,87,96-97,109-134,137-144,164,181-188,190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "60e3fe5c7b36bbf6158dff01e68dc10116891236",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
