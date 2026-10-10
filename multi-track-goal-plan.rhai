@@ -440,10 +440,17 @@ fn bullet_indent(items) {
     out
 }
 
-fn plan_launch(goal, goal_path, source_plan, dir, mode, visual, perf) {
+fn plan_launch(goal, goal_path, source_plan, dir, mode, visual, perf, extra_sources) {
     let line = "/workflow multi-track-plan {";
     line += "\"goal\":" + json_encode(goal);
-    line += ",\"sources\":[" + json_encode(goal_path) + "]";
+    line += ",\"sources\":[" + json_encode(goal_path);
+    for src in as_array(extra_sources) {
+        let text = one_line(src);
+        if text != "" && text != goal_path {
+            line += "," + json_encode(text);
+        }
+    }
+    line += "]";
     line += ",\"plan_path\":" + json_encode(source_plan);
     line += ",\"qa_dir\":" + json_encode(dir);
     line += ",\"pipeline_mode\":" + json_encode(mode);
@@ -551,9 +558,10 @@ fn self_check() {
     if quoted_cmd(#{ visual_command: "pnpm test:visual" }, "visual_command", "visual_source", "visual_quote") != "" {
         return "quoted drop";
     }
-    let launch = plan_launch("Ship two areas.", "plans/multi-track-goal.md", "plans/multi-track-source.md", "qa/feature", "both", "pnpm test:visual", "");
+    let launch = plan_launch("Ship two areas.", "plans/multi-track-goal.md", "plans/multi-track-source.md", "qa/feature", "both", "pnpm test:visual", "", ["notes/brief.md", "plans/multi-track-goal.md"]);
     if !launch.contains("multi-track-plan") { return "launch name"; }
     if !launch.contains("plans/multi-track-goal.md") { return "launch source"; }
+    if !launch.contains("notes/brief.md") { return "launch extra source"; }
     if !launch.contains("visual_command") { return "launch visual"; }
     if launch.contains("perf_command") { return "launch perf"; }
     let md = render_goal(#{
@@ -721,7 +729,7 @@ if goal_text != "" {
     choose_prompt += "5. goal is one sentence. source is the issue id or the file path you used. issues_seen lists id plus title for issues you actually listed, at most 12. evidence quotes the issue title or the file line. Empty evidence is invalid.\n";
     let choose_r = agent(choose_prompt, #{
         label: "choose",
-        capability_mode: "all",
+        capability_mode: "execute",
         output_schema: choose_schema,
     });
     if canned_result(choose_r) { finish_smoke(); }
@@ -936,7 +944,7 @@ for item in risk_lines.lines { risk_raw.push(item); }
 for item in unresolved { risk_raw.push(item); }
 if commands.len() == 0 { risk_raw.push("No file-backed verify command was found. Do not invent one."); }
 let risks = clean_lines(risk_raw, 12);
-let launch = plan_launch(goal_text, plan_path, source_plan, qa_dir, pipeline_mode, visual_cmd, perf_cmd);
+let launch = plan_launch(goal_text, plan_path, source_plan, qa_dir, pipeline_mode, visual_cmd, perf_cmd, sources);
 let doc = #{
     goal: goal_text,
     goal_why: goal_why,
