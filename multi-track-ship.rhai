@@ -40,6 +40,9 @@ let ingest_schema = #{
         "excluded": #{ "type": "array", "maxItems": 20, "items": #{ "type": "string" } },
         "foundation_notes": #{ "type": "string" },
         "pipeline_hints": #{ "type": "string" },
+        "qa_dir": #{ "type": "string" },
+        "visual_command": #{ "type": "string" },
+        "perf_command": #{ "type": "string" },
         "risks": #{ "type": "array", "maxItems": 16, "items": #{ "type": "string" } },
     },
 };
@@ -222,6 +225,56 @@ fn int_arg(v, default_val, min_v, max_v) {
     n
 }
 
+fn first_text(primary, secondary) {
+    let chosen = trimmed(primary);
+    if chosen != "" { return chosen; }
+    trimmed(secondary)
+}
+
+fn rel_dir(raw) {
+    let text = trimmed(raw);
+    if text == "" { return ""; }
+    if text.contains("..") { return ""; }
+    if text.contains("\\") { return ""; }
+    if text.contains("\n") { return ""; }
+    if text.sub_string(0, 1) == "/" { return ""; }
+    text
+}
+
+fn visual_hint_for(cmd, dir) {
+    let command = trimmed(cmd);
+    if command != "" { return "Prefer visual command: " + command; }
+    "Run the plan's building-qa / preview / in-game visual checks; write notes under " + dir + "/visual_notes.md. Must run on this local machine."
+}
+
+fn perf_hint_for(cmd, dir) {
+    let command = trimmed(cmd);
+    if command != "" { return "Prefer perf command: " + command; }
+    "Run local perf smoke (benchmark script or Launch_benchmark) and copy results into " + dir + "/"
+}
+
+fn hint_self_check() {
+    if first_text("from-arg", "from-plan") != "from-arg" { return "arg wins"; }
+    if first_text("", "from-plan") != "from-plan" { return "plan fills empty"; }
+    if first_text((), ()) != "" { return "empty hint"; }
+    if rel_dir("../qa") != "" { return "reject parent"; }
+    if rel_dir("/tmp/qa") != "" { return "reject abs"; }
+    if rel_dir("qa/feature") != "qa/feature" { return "keep rel"; }
+    let visual = visual_hint_for("pnpm test:visual", "qa/feature");
+    if !visual.contains("Prefer visual command: pnpm test:visual") { return "visual command"; }
+    if visual.contains("building-qa") { return "visual default leaked"; }
+    let fallback = visual_hint_for("", "qa/structures");
+    if !fallback.contains("building-qa") { return "visual default"; }
+    if !fallback.contains("qa/structures/visual_notes.md") { return "visual dir"; }
+    let perf = perf_hint_for("pnpm test:perf", "qa/feature");
+    if !perf.contains("Prefer perf command: pnpm test:perf") { return "perf command"; }
+    if perf.contains("Launch_benchmark") { return "perf default leaked"; }
+    let perf_fallback = perf_hint_for("", "qa/feature");
+    if !perf_fallback.contains("Launch_benchmark") { return "perf default"; }
+    if !perf_fallback.contains("qa/feature/") { return "perf dir"; }
+    ""
+}
+
 // --- args --------------------------------------------------------------------
 
 let sources_arg = if args == () { () } else { args.sources };
@@ -269,6 +322,11 @@ if sources_arg == () {
     if cur != "" { sources_list.push(cur); }
 }
 
+let hint_error = hint_self_check();
+if hint_error != "" {
+    pause("verification", "multi-track-ship hint self-check failed: " + hint_error);
+}
+
 if sources_list.len() == 0 {
     pause("verification", "Pass args.sources — multi-track plan file(s). Optional: goal, plan_path, qa_dir, pipeline_mode (after_each|batch|both), auto_approve_plan, max_fix_rounds, visual_command, perf_command.");
 }
@@ -288,11 +346,12 @@ let plan_path = if plan_path_arg == () || trimmed(plan_path_arg.to_string()) == 
     trimmed(plan_path_arg.to_string())
 };
 
-let qa_dir = if qa_dir_arg == () || trimmed(qa_dir_arg.to_string()) == "" {
-    "qa/structures"
-} else {
-    trimmed(qa_dir_arg.to_string())
-};
+let qa_from_arg = false;
+let qa_dir = "qa/structures";
+if qa_dir_arg != () && trimmed(qa_dir_arg.to_string()) != "" {
+    qa_from_arg = true;
+    qa_dir = trimmed(qa_dir_arg.to_string());
+}
 
 let pipeline_mode = if pipeline_mode_arg == () || trimmed(pipeline_mode_arg.to_string()) == "" {
     "both"
@@ -303,18 +362,6 @@ let pipeline_mode = if pipeline_mode_arg == () || trimmed(pipeline_mode_arg.to_s
 if pipeline_mode != "after_each" && pipeline_mode != "batch" && pipeline_mode != "both" {
     pipeline_mode = "both";
 }
-
-let visual_hint = if visual_cmd_arg == () || trimmed(visual_cmd_arg.to_string()) == "" {
-    "Run the plan's building-qa / preview / in-game visual checks; write notes under " + qa_dir + "/visual_notes.md. Must run on this local machine."
-} else {
-    "Prefer visual command: " + trimmed(visual_cmd_arg.to_string())
-};
-
-let perf_hint = if perf_cmd_arg == () || trimmed(perf_cmd_arg.to_string()) == "" {
-    "Run local perf smoke (benchmark script or Launch_benchmark) and copy results into " + qa_dir + "/"
-} else {
-    "Prefer perf command: " + trimmed(perf_cmd_arg.to_string())
-};
 
 // --- Phase 1: Ingest ---------------------------------------------------------
 
@@ -330,7 +377,8 @@ ingest_prompt += "1) Read every source. Honor EXCLUSIONS / DONE foundation — d
 ingest_prompt += "2) Extract ordered tracks with id, title, priority (lower first), key files, acceptance.\n";
 ingest_prompt += "3) foundation_notes: what is already shipped and must not be rewritten.\n";
 ingest_prompt += "4) pipeline_hints: shared QA pipeline steps and artifact dirs from the plan (default qa dir: " + qa_dir + ").\n";
-ingest_prompt += "5) risks: merge conflicts, sequential file ownership needs.\n";
+ingest_prompt += "5) Copy qa_dir, visual_command, and perf_command only when the source plan states them. Leave each one empty when it is absent. Do not invent a command.\n";
+ingest_prompt += "6) risks: merge conflicts, sequential file ownership needs.\n";
 ingest_prompt += "Use tools. Empty tracks is invalid if the plan lists work.\n";
 
 let ingest_r = agent(ingest_prompt, #{
@@ -347,6 +395,14 @@ let ingest = ingest_r.output;
 let ingest_summary = if ingest.summary != () { ingest.summary } else { "(no summary)" };
 let foundation = if ingest.foundation_notes != () { ingest.foundation_notes } else { "" };
 let pipeline_hints = if ingest.pipeline_hints != () { ingest.pipeline_hints } else { "Use " + qa_dir + " for all pipeline artifacts." };
+if !qa_from_arg {
+    let planned_dir = rel_dir(if ingest.qa_dir != () { ingest.qa_dir } else { "" });
+    if planned_dir != "" { qa_dir = planned_dir; }
+}
+let visual_cmd = first_text(visual_cmd_arg, if ingest.visual_command != () { ingest.visual_command } else { "" });
+let perf_cmd = first_text(perf_cmd_arg, if ingest.perf_command != () { ingest.perf_command } else { "" });
+if visual_cmd != "" { pipeline_hints += "\nvisual_command: " + visual_cmd; }
+if perf_cmd != "" { pipeline_hints += "\nperf_command: " + perf_cmd; }
 let risks_blob = join_lines(ingest.risks, "- ");
 let excluded_blob = join_lines(ingest.excluded, "- ");
 if risks_blob == "" { risks_blob = "- (none)\n"; }
@@ -754,6 +810,9 @@ let vp_fail = "";
 let vp_cmds = "";
 let vp_fix_round = 0;
 let vp_fix_log = "";
+
+let visual_hint = visual_hint_for(visual_cmd, qa_dir);
+let perf_hint = perf_hint_for(perf_cmd, qa_dir);
 
 if !pipeline_passed {
     log("Skipping LocalVisualPerf — shared pipeline not green");
