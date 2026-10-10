@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-plan",
-    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.2.",
+    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.3.",
     when_to_use: "Before /multi-track-ship, when a goal spans several areas and needs a source plan with tracks, file ownership, and file-backed QA commands. A multi-track-goal-plan file can be the source. Not for one file (implement-from-plan) or the next Linear issue (ship-next-issue).",
     phases: [
         #{ title: "Scope", detail: "read the goal, sources, and file-backed commands" },
@@ -1371,6 +1371,7 @@ if skeptic_miss == 0 {
                 revised_ok = true;
             }
         } else {
+            block_write = true;
             pause("verification", "Revision left fewer than 2 tracks. Single-area work belongs on implement-from-plan. No source plan written.");
         }
     } else {

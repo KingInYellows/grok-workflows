@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-goal-plan",
-    description: "Review the repo and open issues, pick the next multi-area goal, and write the file that launches multi-track-plan. Does not implement. Version 1.1.2.",
+    description: "Review the repo and open issues, pick the next multi-area goal, and write the file that launches multi-track-plan. Does not implement. Version 1.1.3.",
     when_to_use: "First step of the multi-track chain. With no args.goal, chooses the next multi-area goal from the repo and open GitHub or Linear issues. Pass args.goal to lock the sentence. Writes plans/multi-track-goal.md. A single-area result names implement-from-plan. Not goal-planning and not goal-execute.",
     phases: [
         #{ title: "Choose", detail: "pick the next multi-area goal from the repo and open issues" },
@@ -455,21 +455,20 @@ fn split_checked(entries) {
 
 fn body_mark(body) {
     let n = body.len();
-    let sample = "";
-    if n > 0 {
-        let step = n / 12;
-        if step < 1 { step = 1; }
-        let i = 0;
-        let guard = 0;
-        while i < n && guard < 12 {
-            let ch = body.sub_string(i, 1);
-            if ch == "-" || ch == ">" || ch == "<" || ch == " " { ch = "."; }
-            sample += ch;
-            i += step;
-            guard += 1;
-        }
+    let sum = 0;
+    let i = 0;
+    while i < n {
+        sum += (i + 1) * body[i].to_int();
+        i += 1;
     }
-    "<!-- goal-body " + n.to_string() + " " + sample + " -->"
+    let head = body;
+    if n > 80 { head = body.sub_string(0, 80); }
+    let line = "<!-- goal-body " + n.to_string() + " " + sum.to_string() + " " + one_line(head);
+    if n > 160 {
+        let mid = body.sub_string(n / 3, 80);
+        line += " " + one_line(mid);
+    }
+    line + " -->"
 }
 
 fn witness_of(body) {
@@ -779,7 +778,25 @@ fn self_check() {
     let marked_a = sample + "\n" + body_mark(sample) + "\n";
     let marked_b = sample + "x\n" + body_mark(sample + "x") + "\n";
     if body_mark(sample) == body_mark(sample + "x") { return "mark collide"; }
+    if body_mark("line one\nline two").contains("\n") { return "mark newline"; }
     if marked_a == marked_b { return "marked collide"; }
+    let ending = "";
+    let zi = 0;
+    while zi < 48 {
+        ending += "Z";
+        zi += 1;
+    }
+    let pad = "";
+    let pi = 0;
+    while pi < 120 {
+        pad += "m";
+        pi += 1;
+    }
+    let mark_a = "AAA" + pad + "xxxx" + ending;
+    let mark_b = "AAA" + pad + "yyyy" + ending;
+    if mark_a.len() != mark_b.len() { return "mark length"; }
+    if body_mark(mark_a) == body_mark(mark_b) { return "mark same end"; }
+    if body_mark(mark_a) != body_mark(mark_a) { return "mark stable"; }
     let wit = witness_of(marked_a);
     if map_str(wit, "head") == "" || !marked_a.contains(map_str(wit, "tail")) { return "witness"; }
     if write_accepted(#{ success: true, output: #{ wrote: true, plan_path: "plans/multi-track-goal.md", evidence: "stub evidence" } }, "plans/multi-track-goal.md") {
@@ -1071,10 +1088,11 @@ split_prompt += "evidence must quote a path you opened. Missing evidence means o
 let cmd_prompt = "";
 cmd_prompt += fence();
 cmd_prompt += "You are the COMMAND SKEPTIC. Refute invented verify commands. Do not edit.\n";
-cmd_prompt += "Open each source_file and confirm the quote is in that file.\n";
-cmd_prompt += "ok=true if every command is quoted from that file, or if the list is empty.\n";
+cmd_prompt += "Open each source_file and confirm the quote defines, names, or otherwise documents that exact command.\n";
+cmd_prompt += "ok=true only when every listed command's quote documents that exact command, or the list is empty.\n";
 cmd_prompt += "The list includes verify, visual, and perf commands. Check each one.\n";
-cmd_prompt += "When ok=false, bad_commands lists the command strings that are not in their source file.\n";
+cmd_prompt += "A genuine but unrelated quote from the same file is ok=false, and that command goes in bad_commands.\n";
+cmd_prompt += "When ok=false, bad_commands lists every command the quote does not document. An empty bad_commands list with ok=false is still a failure.\n";
 cmd_prompt += "Commands:\n" + cmd_blob;
 cmd_prompt += "evidence must quote the file line or say the list is empty. Otherwise ok=false.\n";
 
@@ -1151,38 +1169,21 @@ if split_ok {
             re_split_prompt += "Use read_file or grep on every path. ok=true only if every path exists and the areas are separate enough to be tracks.\n";
             re_split_prompt += "Areas:\n" + areas_text;
             re_split_prompt += "evidence must quote a path you opened. Missing evidence means ok=false.\n";
-            let re_cmd_prompt = "";
-            re_cmd_prompt += fence();
-            re_cmd_prompt += "You are the COMMAND SKEPTIC. Refute invented verify commands. Do not edit.\n";
-            re_cmd_prompt += "Open each source_file and confirm the quote is in that file.\n";
-            re_cmd_prompt += "ok=true if every command is quoted from that file, or if the list is empty.\n";
-            re_cmd_prompt += "Commands:\n" + cmd_blob;
-            re_cmd_prompt += "evidence must quote the file line or say the list is empty. Otherwise ok=false.\n";
-            let recheck_rows = parallel([
-                #{ prompt: re_split_prompt, label: "refute:split:recheck", capability_mode: "read-only", output_schema: skeptic_schema },
-                #{ prompt: re_cmd_prompt, label: "refute:commands:recheck", capability_mode: "read-only", output_schema: skeptic_schema },
-            ]);
-            let recheck_miss = 0;
-            let recheck_why = "";
-            for row in recheck_rows {
-                if canned_result(row) { finish_smoke(); }
-                if !skeptic_ok(row) {
-                    recheck_miss += 1;
-                    if recheck_why == "" {
-                        if row != () && row.output != () {
-                            let reasons = as_array(map_get(row.output, "reasons"));
-                            if reasons.len() > 0 {
-                                recheck_why = clip(one_line(reasons[0]), 300);
-                            }
-                        }
-                        if recheck_why == "" {
-                            recheck_why = "skeptic returned no usable evidence";
-                        }
+            let re_split = agent(re_split_prompt, #{
+                label: "refute:split:recheck",
+                capability_mode: "read-only",
+                output_schema: skeptic_schema,
+            });
+            if canned_result(re_split) { finish_smoke(); }
+            if !skeptic_ok(re_split) {
+                let recheck_why = "skeptic returned no usable evidence";
+                if re_split != () && re_split.output != () {
+                    let reasons = as_array(map_get(re_split.output, "reasons"));
+                    if reasons.len() > 0 {
+                        recheck_why = clip(one_line(reasons[0]), 300);
                     }
                 }
-            }
-            if recheck_miss > 0 {
-                finish_single("Revised areas failed skeptic re-check (" + recheck_miss.to_string() + "/2). " + recheck_why);
+                finish_single("Revised areas failed split re-check. " + recheck_why);
             } else {
                 revised_ok = true;
             }
@@ -1219,9 +1220,11 @@ if !command_ok {
         let again_prompt = "";
         again_prompt += fence();
         again_prompt += "You are the COMMAND SKEPTIC. Refute invented verify commands. Do not edit.\n";
-        again_prompt += "Open each source_file and confirm the quote is in that file.\n";
-        again_prompt += "ok=true if every command is quoted from that file, or if the list is empty.\n";
-        again_prompt += "When ok=false, bad_commands lists the command strings that are not in their source file.\n";
+        again_prompt += "Open each source_file and confirm the quote defines, names, or otherwise documents that exact command.\n";
+        again_prompt += "ok=true only when every listed command's quote documents that exact command, or the list is empty.\n";
+        again_prompt += "The list includes verify, visual, and perf commands. Check each one.\n";
+        again_prompt += "A genuine but unrelated quote from the same file is ok=false, and that command goes in bad_commands.\n";
+        again_prompt += "When ok=false, bad_commands lists every command the quote does not document. An empty bad_commands list with ok=false is still a failure.\n";
         again_prompt += "Commands:\n" + command_blob(checked);
         again_prompt += "evidence must quote the file line or say the list is empty. Otherwise ok=false.\n";
         let again = agent(again_prompt, #{
