@@ -1,0 +1,14 @@
+multi-track-ship.rhai
+  h_6000354274ce50 256-259,295-297,527-532
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "df1bad410916beb42c22eb35372bfb6594069daf",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
