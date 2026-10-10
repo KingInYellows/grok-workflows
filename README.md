@@ -72,9 +72,11 @@ Pull `origin/main` (fast-forward only) and copy `*.rhai` into Grok config dirs. 
 ```bash
 cd ~/projects/grok-workflows
 ./scripts/update-workflows.sh            # fetch, ff-only pull, sync
-./scripts/update-workflows.sh --dry-run  # show git + copy actions
+./scripts/update-workflows.sh --dry-run  # show git + copy actions from the fetched revision
 ./scripts/update-workflows.sh --no-pull  # copy the current tree only
 ```
+
+A dry run fetches but does not merge. If the remote is ahead, copy actions are previewed from that revision, not from the unchanged checkout. `git fetch` is bounded (120s by default, `UPDATE_WORKFLOWS_FETCH_TIMEOUT`) so a stalled remote cannot hold the lock.
 
 Cron example (runs only while WSL is up):
 
