@@ -1,0 +1,21 @@
+multi-track-goal-plan.rhai
+  s_fb27970bd1b7b8::t_af3201463e6d1d 1-957,959-960
+  s_fb27970bd1b7b8::t_5017ef2b8c9989 958
+  s_fb27970bd1b7b8::t_268bf863bd71ce 961-963
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b6fffa1c7b51269cd6a2296319cadff9797a2616",
+  "prompts": {},
+  "sessions": {
+    "s_fb27970bd1b7b8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "01a122c3-5c7d-7cf1-8585-3219416f847f",
+        "model": "unknown"
+      },
+      "human_author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
