@@ -67,6 +67,27 @@ cd \\wsl$\Ubuntu-24.04\home\kinginyellow\projects\grok-workflows
 
 `--prune` / `-Prune` is opt-in so a workflow created with `/create-workflow` is not deleted until you copy it into git.
 
+## Daily update
+
+Pull `origin/main` (fast-forward only) and copy `*.rhai` into Grok config dirs. Never prunes, so local-only workflows stay put. Refuses to run if this clone is dirty, not on `main`, or cannot fast-forward.
+
+```bash
+cd ~/projects/grok-workflows
+./scripts/update-workflows.sh            # fetch, ff-only pull, sync
+./scripts/update-workflows.sh --dry-run  # show git + copy actions from the fetched revision
+./scripts/update-workflows.sh --no-pull  # copy the current tree only
+```
+
+A dry run fetches but does not merge. If the remote is ahead, copy actions are previewed from that revision, not from the unchanged checkout. `git fetch` is bounded (120s by default, `UPDATE_WORKFLOWS_FETCH_TIMEOUT`). If it ignores TERM, it is killed after a further 10s (`UPDATE_WORKFLOWS_FETCH_KILL_AFTER`) so a stalled remote cannot hold the lock.
+
+Cron example (runs only while WSL is up):
+
+```cron
+15 9 * * * mkdir -p $HOME/.grok/logs && $HOME/projects/grok-workflows/scripts/update-workflows.sh >>$HOME/.grok/logs/update-workflows.log 2>&1
+```
+
+Do not `git pull` inside `~/.grok/workflows`. Grok writes files there.
+
 ## Adding a workflow
 
 1. In a Grok session: `/create-workflow ...` (saves under `~/.grok/workflows/`).
