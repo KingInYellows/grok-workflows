@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-plan",
-    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.4.",
+    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.5.",
     when_to_use: "Before /multi-track-ship, when a goal spans several areas and needs a source plan with tracks, file ownership, and file-backed QA commands. A multi-track-goal-plan file can be the source. Not for one file (implement-from-plan) or the next Linear issue (ship-next-issue).",
     phases: [
         #{ title: "Scope", detail: "read the goal, sources, and file-backed commands" },
@@ -198,6 +198,27 @@ fn clip(s, n) {
     trimmed(text.sub_string(0, cut))
 }
 
+fn clip_sentence(s, n) {
+    let text = one_line(s);
+    if text.len() <= n { return #{ text: text, clipped: false }; }
+    let cut = text.sub_string(0, n);
+    let i = cut.len() - 1;
+    let end = -1;
+    while i > 40 {
+        let ch = cut.sub_string(i, 1);
+        if ch == "." || ch == "!" || ch == "?" {
+            end = i;
+            i = 0;
+        } else {
+            i -= 1;
+        }
+    }
+    if end > 40 {
+        return #{ text: trimmed(cut.sub_string(0, end + 1)), clipped: true };
+    }
+    #{ text: trimmed(cut), clipped: true }
+}
+
 fn one_line(s) {
     let text = trimmed(s);
     let out = "";
@@ -384,6 +405,7 @@ fn normalize_tracks(raw, max_tracks, max_files) {
     let pending = [];
     let dropped = 0;
     let file_drops = 0;
+    let acc_clips = 0;
     let used = [];
     for item in as_array(raw) {
         let base = slug_id(map_str(item, "id"));
@@ -402,7 +424,9 @@ fn normalize_tracks(raw, max_tracks, max_files) {
                 if title == "" { title = id; }
                 let pri = as_int(map_get(item, "priority"), 50, 1, 100);
                 let actions = clean_lines(map_get(item, "actions"), 8);
-                let acc = clip(one_line(map_str(item, "acceptance")), 400);
+                let acc_row = clip_sentence(map_str(item, "acceptance"), 4000);
+                if acc_row.clipped { acc_clips += 1; }
+                let acc = acc_row.text;
                 let checks = clip(one_line(map_str(item, "pipeline_checks")), 300);
                 pending.push(#{
                     id: id,
@@ -456,6 +480,7 @@ fn normalize_tracks(raw, max_tracks, max_files) {
         dropped: dropped,
         file_drops: file_drops,
         overlaps: overlaps_of(capped),
+        acceptance_clips: acc_clips,
     }
 }
 
@@ -777,6 +802,35 @@ fn self_check() {
     }
     let capped = normalize_tracks(raw, 2, 20);
     if capped.tracks.len() != 2 { return "cap tracks"; }
+    let long_acc = "";
+    let k = 0;
+    while k < 90 {
+        long_acc += "step " + k.to_string() + " fails npm test. ";
+        k += 1;
+    }
+    let kept_long = normalize_tracks([
+        #{ id: "Long", title: "Long", priority: 1, files: ["long.ts"], acceptance: long_acc },
+        #{ id: "Short", title: "Short", priority: 2, files: ["short.ts"], acceptance: "b passes" },
+    ], 8, 20);
+    if kept_long.tracks[0].id != "long" { return "long id"; }
+    if kept_long.tracks[0].acceptance != trimmed(long_acc) { return "acceptance clip"; }
+    if kept_long.acceptance_clips != 0 { return "acceptance clips"; }
+    let huge = "";
+    let h = 0;
+    while h < 200 {
+        huge += "Sentence " + h.to_string() + " must stay whole. ";
+        h += 1;
+    }
+    let clipped_huge = normalize_tracks([
+        #{ id: "Huge", title: "Huge", priority: 1, files: ["huge.ts"], acceptance: huge },
+        #{ id: "Other", title: "Other", priority: 2, files: ["other.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let huge_acc = clipped_huge.tracks[0].acceptance;
+    if huge_acc.len() > 4000 { return "acceptance cap"; }
+    if huge_acc.len() < 40 { return "acceptance empty cut"; }
+    if huge_acc.sub_string(huge_acc.len() - 1, 1) != "." { return "acceptance boundary"; }
+    if !huge_acc.contains("Sentence 0") { return "acceptance start"; }
+    if clipped_huge.acceptance_clips != 1 { return "acceptance clip count"; }
     let doc = #{
         goal: "Ship two areas.",
         foundation: ["auth exists"],
@@ -1144,6 +1198,7 @@ fn merge_lines(left, right, cap) {
 let norm = normalize_tracks(map_get(draft_out, "tracks"), max_tracks, 20);
 if norm.dropped > 0 { log("Dropped tracks: " + norm.dropped.to_string()); }
 if norm.file_drops > 0 { log("Dropped file paths: " + norm.file_drops.to_string()); }
+if norm.acceptance_clips > 0 { log("Clipped acceptance on a sentence boundary: " + norm.acceptance_clips.to_string()); }
 if norm.tracks.len() < 2 {
     pause("verification", "Draft produced fewer than 2 tracks with real files. Single-area work belongs on implement-from-plan. Fix args.goal or sources and resume.");
 }
@@ -1315,6 +1370,7 @@ if skeptic_miss == 0 {
             foundation = merge_lines(foundation.lines, more_found.lines, 16);
             excluded = merge_lines(excluded.lines, more_skip.lines, 20);
             log("Revise kept " + norm.tracks.len().to_string() + " tracks");
+            if norm.acceptance_clips > 0 { log("Clipped acceptance on a sentence boundary: " + norm.acceptance_clips.to_string()); }
             let re_overlap = bullet_list(norm.overlaps, "(no shared owner files)");
             let re_file_prompt = "";
             re_file_prompt += fence();
