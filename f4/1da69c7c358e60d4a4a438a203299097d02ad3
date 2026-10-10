@@ -1,0 +1,14 @@
+multi-track-goal-plan.rhai
+  h_6000354274ce50 443,446-453,561,564,732,947
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f41da69c7c358e60d4a4a438a203299097d02ad3",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
