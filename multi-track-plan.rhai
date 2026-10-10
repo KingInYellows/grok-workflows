@@ -594,6 +594,16 @@ fn evidence_has_goal(evidence, goal) {
     trimmed(evidence).contains(prefix)
 }
 
+fn forward_scoped_cmd(command, from_scope, cmd_ok) {
+    if from_scope && !cmd_ok { return ""; }
+    command
+}
+
+fn scoped_cmd_line(label, command, source, quote) {
+    if command == "" { return ""; }
+    "- " + label + ": `" + command + "` from " + source + " quote: " + quote + "\n"
+}
+
 fn self_check() {
     if slug_id("Track A") != "track-a" { return "slug spaces"; }
     if slug_id("Foo/Bar") != "foo-bar" { return "slug slash"; }
@@ -699,6 +709,11 @@ fn self_check() {
     if !evidence_has_goal("Ship two areas. rest", "Ship two areas.") { return "goal evidence"; }
     if evidence_has_goal("old goal", "Ship two areas.") { return "stale goal"; }
     if !evidence_has_goal("anything", "") { return "empty goal prefix"; }
+    if forward_scoped_cmd("pnpm test:visual", true, false) != "" { return "scoped visual dropped"; }
+    if forward_scoped_cmd("pnpm test:visual", true, true) != "pnpm test:visual" { return "scoped visual kept"; }
+    if forward_scoped_cmd("pnpm test:visual", false, false) != "pnpm test:visual" { return "arg visual kept"; }
+    if scoped_cmd_line("visual_command", "", "package.json", "vitest") != "" { return "empty scoped line"; }
+    if !scoped_cmd_line("visual_command", "pnpm test:visual", "package.json", "vitest").contains("package.json") { return "scoped cite"; }
     ""
 }
 
@@ -859,6 +874,13 @@ if commands.len() == 0 {
         cmd_blob += "- `" + cmd.command + "` from " + cmd.source_file + " quote: " + cmd.quote + "\n";
     }
 }
+let scoped_verify = "";
+if visual_arg == "" {
+    scoped_verify += scoped_cmd_line("visual_command", visual_cmd, one_line(map_str(scope_out, "visual_source")), clip(one_line(map_str(scope_out, "visual_quote")), 240));
+}
+if perf_arg == "" {
+    scoped_verify += scoped_cmd_line("perf_command", perf_cmd, one_line(map_str(scope_out, "perf_source")), clip(one_line(map_str(scope_out, "perf_quote")), 240));
+}
 let found_blob = bullet_list(foundation.lines, "(none)");
 let skip_blob = bullet_list(excluded.lines, "(none)");
 let area_blob = bullet_list(areas.lines, "(none)");
@@ -942,6 +964,10 @@ cmd_prompt += "You are the COMMAND SKEPTIC. Refute invented verify commands. Do 
 cmd_prompt += "Open each source_file and confirm the quote is really in that file.\n";
 cmd_prompt += "ok=true if every command below is quoted from that file, or if the list is empty.\n";
 cmd_prompt += "Commands:\n" + cmd_blob;
+if scoped_verify != "" {
+    cmd_prompt += "Scope-copied visual and perf commands. Open each source and confirm the quote:\n" + scoped_verify;
+    cmd_prompt += "A visual or perf line whose quote is not in that file means ok=false.\n";
+}
 cmd_prompt += "evidence must quote the file line or say the list is empty. Otherwise ok=false.\n";
 
 let skeptic_jobs = [
@@ -988,6 +1014,9 @@ if skeptic_miss == 0 {
     commands = commands_after_skeptic(commands, cmd_ok);
     if !cmd_ok {
         cmd_blob = "- No file-backed command remains because the command skeptic rejected the list.\n";
+        visual_cmd = forward_scoped_cmd(visual_cmd, visual_arg == "", false);
+        perf_cmd = forward_scoped_cmd(perf_cmd, perf_arg == "", false);
+        scoped_verify = "";
         log("Command list dropped because the command skeptic rejected it");
         unresolved.push("command list was dropped because the command skeptic rejected it");
     }
@@ -1040,6 +1069,10 @@ if skeptic_miss == 0 {
             re_cmd_prompt += "Open each source_file and confirm the quote is really in that file.\n";
             re_cmd_prompt += "ok=true if every command below is quoted from that file, or if the list is empty.\n";
             re_cmd_prompt += "Commands:\n" + cmd_blob;
+            if scoped_verify != "" {
+                re_cmd_prompt += "Scope-copied visual and perf commands. Open each source and confirm the quote:\n" + scoped_verify;
+                re_cmd_prompt += "A visual or perf line whose quote is not in that file means ok=false.\n";
+            }
             re_cmd_prompt += "evidence must quote the file line or say the list is empty. Otherwise ok=false.\n";
             let recheck_jobs = [
                 #{ prompt: re_file_prompt, label: "refute:files:recheck", capability_mode: "read-only", output_schema: skeptic_schema },
