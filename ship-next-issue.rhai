@@ -1,7 +1,7 @@
 let meta = #{
     name: "ship-next-issue",
     description: "Pick the next open issue in any git repo, implement it, review it, submit one Graphite PR, and take one bot-comment pass",
-    when_to_use: "Any git checkout. Picks the next completable open issue for the Linear team matching the origin repo name, or args.issue. Current cycle first, then other open team issues. Drops epics, open blockers, and needs-owner unless args.issue names that issue. Submits one Graphite PR unless args.submit is false. One bot-comment pass after submit, not a long-lived watcher. Never merges. Tracked changes that do not overlap the planned files stay unstaged. /ship-next-issue or /workflow ship-next-issue.",
+    when_to_use: "Any git checkout. Picks the next completable open issue for the Linear team matching the origin repo name, or args.issue. When args.issue is empty, args.query is used only when the whole value is an issue key such as GOAL-27. Current cycle first, then other open team issues. Drops epics, open blockers, and needs-owner unless that key names the issue. Submits one Graphite PR unless args.submit is false. One bot-comment pass after submit, not a long-lived watcher. Never merges. Tracked changes that do not overlap the planned files stay unstaged. /ship-next-issue or /workflow ship-next-issue.",
     phases: [
         #{ title: "Select", detail: "page open issues, then rank" },
         #{ title: "Evaluate", detail: "reject work one PR cannot finish" },
@@ -81,6 +81,58 @@ fn map_get(m, key) {
 
 fn map_str(m, key) {
     trimmed(map_get(m, key))
+}
+
+fn upper_char(c) {
+    let lower = "abcdefghijklmnopqrstuvwxyz";
+    let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let i = 0;
+    while i < 26 {
+        if c == lower.sub_string(i, 1) { return upper.sub_string(i, 1); }
+        i += 1;
+    }
+    c
+}
+
+// A slash command stores its trailing text in args.query. Accept that only
+// when the whole value is one issue key, so prose does not pin an issue.
+// Linear identifiers are uppercase, so the key is returned in that form.
+fn issue_key(text) {
+    let s = trimmed(text);
+    let n = s.len();
+    if n < 3 { return ""; }
+    let letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let digits = "0123456789";
+    let alnum = letters + digits;
+    if !letters.contains(s.sub_string(0, 1)) { return ""; }
+    let out = "";
+    let dash = -1;
+    let i = 0;
+    while i < n {
+        let c = s.sub_string(i, 1);
+        if c == "-" {
+            if dash != -1 || i == 0 || i == n - 1 { return ""; }
+            dash = i;
+            out += c;
+        } else if dash == -1 {
+            if !alnum.contains(c) { return ""; }
+            out += upper_char(c);
+        } else if !digits.contains(c) {
+            return "";
+        } else {
+            out += c;
+        }
+        i += 1;
+    }
+    if dash < 1 { return ""; }
+    out
+}
+
+fn named_issue(args_map) {
+    if args_map == () || type_of(args_map) != "map" { return ""; }
+    let explicit = map_str(args_map, "issue");
+    if explicit != "" { return issue_key(explicit); }
+    issue_key(map_str(args_map, "query"))
 }
 
 fn map_bool(m, key, fallback) {
@@ -434,6 +486,17 @@ fn self_check() {
     if map_str(skipped, "identifier") != "EX-1" { return "skip used"; }
     if drop_reason(owner, "") != "needs-owner" { return "owner drop"; }
     if drop_reason(owner, "EX-4") != "" { return "named owner kept"; }
+    if named_issue(#{ issue: "GOAL-27", query: "GOAL-16" }) != "GOAL-27" { return "named issue wins"; }
+    if named_issue(#{ query: " goal-27 " }) != "GOAL-27" { return "query issue"; }
+    if named_issue(#{ query: "fix the flaky test" }) != "" { return "query prose"; }
+    if named_issue(#{ issue: "soon", query: "GOAL-27" }) != "" { return "bad issue ignores query"; }
+    if named_issue(()) != "" { return "empty args"; }
+    if issue_key("GOAL-") != "" { return "issue key trailing dash"; }
+    if issue_key("1GOAL-2") != "" { return "issue key leading digit"; }
+    let eval_text = evaluate_prompt(#{});
+    if !eval_text.contains("only when the issue has that label") { return "eval label"; }
+    if !eval_text.contains("blocked_by contains an open issue") { return "eval blocker"; }
+    if !eval_text.contains("paragraph in the description is not a blocker") { return "eval paragraph"; }
     if drop_reason(epic, "") != "epic" { return "epic drop"; }
     if drop_reason(blocked, "") != "blocked" { return "blocked drop"; }
     if drop_reason(started, "") != "" { return "open kept"; }
@@ -730,7 +793,7 @@ fn evaluate_prompt(issue) {
     let p = "You decide whether one issue can be finished in a single pull request. Do not edit.\n";
     p += guardrails_text();
     p += tools_exec();
-    p += "Read the issue with a Linear get tool. Read the files the description names. Set ready true when one remaining in-scope behavior can be finished on a single branch with a failing test and without a new product decision. Items the issue itself marks deferred, out of scope, or pending an operator call stay out of this branch and do not make it unready. Set ready false for an epic, a still-open blocker, or when the only remaining in-scope work still needs a design choice. In evidence, name the single behavior this branch will implement, or quote the blocking reason. Do not ask the branch to include deferred items.\n";
+    p += "Read the issue with a Linear get tool. Read the files the description names. Set ready true when one remaining in-scope behavior can be finished on a single branch with a failing test and without a new product decision. Items the issue itself marks deferred, out of scope, or pending an operator call stay out of this branch and do not make it unready. A paragraph in the description is not a blocker. Set ready false for needs-owner only when the issue has that label, and for a blocker only when blocked_by contains an open issue. Do not set ready false because the description mentions an approval, an owner, or a repo rule. Set ready false for an epic, or when the only remaining in-scope work still needs a design choice. In evidence, name the single behavior this branch will implement, or quote the blocking reason. Do not ask the branch to include deferred items.\n";
     p += packet_line(issue);
     p
 }
@@ -1841,7 +1904,7 @@ let team_override = "";
 let do_submit = true;
 let do_confirm = false;
 if args != () {
-    only_issue = map_str(args, "issue");
+    only_issue = named_issue(args);
     team_override = map_str(args, "team");
     do_submit = map_bool(args, "submit", true);
     do_confirm = map_bool(args, "confirm", false);
