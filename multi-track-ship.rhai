@@ -170,6 +170,18 @@ fn trimmed(s) {
     }
 }
 
+// Missing keys on an agent map throw. Optional ingest fields must use this.
+fn map_get(m, key) {
+    if m == () || type_of(m) != "map" { return (); }
+    let v = ();
+    try {
+        v = m[key];
+    } catch (err) {
+        v = ();
+    }
+    v
+}
+
 fn join_lines(items, prefix) {
     let out = "";
     if items == () { return out; }
@@ -254,6 +266,10 @@ fn perf_hint_for(cmd, dir) {
 }
 
 fn hint_self_check() {
+    if map_get(#{}, "qa_dir") != () { return "missing qa"; }
+    if map_get(#{}, "visual_command") != () { return "missing visual"; }
+    if map_get(#{}, "perf_command") != () { return "missing perf"; }
+    if map_get(#{ qa_dir: "qa/feature" }, "qa_dir") != "qa/feature" { return "present qa"; }
     if first_text("from-arg", "from-plan") != "from-arg" { return "arg wins"; }
     if first_text("", "from-plan") != "from-plan" { return "plan fills empty"; }
     if first_text((), ()) != "" { return "empty hint"; }
@@ -396,11 +412,11 @@ let ingest_summary = if ingest.summary != () { ingest.summary } else { "(no summ
 let foundation = if ingest.foundation_notes != () { ingest.foundation_notes } else { "" };
 let pipeline_hints = if ingest.pipeline_hints != () { ingest.pipeline_hints } else { "Use " + qa_dir + " for all pipeline artifacts." };
 if !qa_from_arg {
-    let planned_dir = rel_dir(if ingest.qa_dir != () { ingest.qa_dir } else { "" });
+    let planned_dir = rel_dir(map_get(ingest, "qa_dir"));
     if planned_dir != "" { qa_dir = planned_dir; }
 }
-let visual_cmd = first_text(visual_cmd_arg, if ingest.visual_command != () { ingest.visual_command } else { "" });
-let perf_cmd = first_text(perf_cmd_arg, if ingest.perf_command != () { ingest.perf_command } else { "" });
+let visual_cmd = first_text(visual_cmd_arg, map_get(ingest, "visual_command"));
+let perf_cmd = first_text(perf_cmd_arg, map_get(ingest, "perf_command"));
 if visual_cmd != "" { pipeline_hints += "\nvisual_command: " + visual_cmd; }
 if perf_cmd != "" { pipeline_hints += "\nperf_command: " + perf_cmd; }
 let risks_blob = join_lines(ingest.risks, "- ");
