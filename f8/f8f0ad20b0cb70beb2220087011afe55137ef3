@@ -1,0 +1,16 @@
+README.md
+  h_6000354274ce50 26
+multi-track-goal-plan.rhai
+  h_6000354274ce50 1-1074
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f8f8f0ad20b0cb70beb2220087011afe55137ef3",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
