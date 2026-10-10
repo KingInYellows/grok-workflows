@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-plan",
-    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.3.",
+    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.4.",
     when_to_use: "Before /multi-track-ship, when a goal spans several areas and needs a source plan with tracks, file ownership, and file-backed QA commands. A multi-track-goal-plan file can be the source. Not for one file (implement-from-plan) or the next Linear issue (ship-next-issue).",
     phases: [
         #{ title: "Scope", detail: "read the goal, sources, and file-backed commands" },
@@ -671,9 +671,9 @@ fn body_mark(body) {
     let n = body.len();
     let sum = 0;
     let i = 0;
-    while i < n {
-        sum += (i + 1) * body[i].to_int();
+    for ch in body {
         i += 1;
+        sum += i * ch.to_int();
     }
     let head = body;
     if n > 80 { head = body.sub_string(0, 80); }

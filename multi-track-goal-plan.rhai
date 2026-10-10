@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-goal-plan",
-    description: "Review the repo and open issues, pick the next multi-area goal, and write the file that launches multi-track-plan. Does not implement. Version 1.1.3.",
+    description: "Review the repo and open issues, pick the next multi-area goal, and write the file that launches multi-track-plan. Does not implement. Version 1.1.4.",
     when_to_use: "First step of the multi-track chain. With no args.goal, chooses the next multi-area goal from the repo and open GitHub or Linear issues. Pass args.goal to lock the sentence. Writes plans/multi-track-goal.md. A single-area result names implement-from-plan. Not goal-planning and not goal-execute.",
     phases: [
         #{ title: "Choose", detail: "pick the next multi-area goal from the repo and open issues" },
@@ -457,9 +457,9 @@ fn body_mark(body) {
     let n = body.len();
     let sum = 0;
     let i = 0;
-    while i < n {
-        sum += (i + 1) * body[i].to_int();
+    for ch in body {
         i += 1;
+        sum += i * ch.to_int();
     }
     let head = body;
     if n > 80 { head = body.sub_string(0, 80); }
