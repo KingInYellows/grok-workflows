@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-plan",
-    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.7.",
+    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.8.",
     when_to_use: "Before /multi-track-ship, when a goal spans several areas and needs a source plan with tracks, file ownership, and file-backed QA commands. A multi-track-goal-plan file can be the source. Not for one file (implement-from-plan) or the next Linear issue (ship-next-issue).",
     phases: [
         #{ title: "Scope", detail: "read the goal, sources, and file-backed commands" },
@@ -198,6 +198,17 @@ fn clip(s, n) {
     trimmed(text.sub_string(0, cut))
 }
 
+fn is_ascii_alnum(ch) {
+    if ch >= "a" && ch <= "z" { return true; }
+    if ch >= "A" && ch <= "Z" { return true; }
+    if ch >= "0" && ch <= "9" { return true; }
+    false
+}
+
+fn is_ascii_upper(ch) {
+    ch >= "A" && ch <= "Z"
+}
+
 fn clip_sentence(s, n) {
     let text = one_line(s);
     if text.len() <= n { return #{ text: text, clipped: false }; }
@@ -207,27 +218,46 @@ fn clip_sentence(s, n) {
     while i > 40 {
         let ch = cut.sub_string(i, 1);
         let boundary = false;
+        let included = i;
         if ch == "." || ch == "!" || ch == "?" {
-            let k = i + 1;
-            let looking = true;
-            while looking {
-                if k >= text.len() {
-                    looking = false;
-                } else {
-                    let nxt = text.sub_string(k, 1);
-                    if nxt == " " {
-                        boundary = true;
+            let prev = "";
+            if i > 0 { prev = text.sub_string(i - 1, 1); }
+            let immediate = "";
+            if i + 1 < text.len() { immediate = text.sub_string(i + 1, 1); }
+            let internal = is_ascii_alnum(prev) && is_ascii_alnum(immediate);
+            if !internal {
+                let k = i + 1;
+                let looking = true;
+                while looking {
+                    if k >= text.len() {
                         looking = false;
-                    } else if nxt == "\"" || nxt == "'" || nxt == ")" || nxt == "]" || nxt == "}" {
-                        k += 1;
                     } else {
-                        looking = false;
+                        let nxt = text.sub_string(k, 1);
+                        if nxt == " " {
+                            let p = k + 1;
+                            while p < text.len() && text.sub_string(p, 1) == " " { p += 1; }
+                            if ch != "." {
+                                boundary = true;
+                            } else if p < text.len() {
+                                let lead = text.sub_string(p, 1);
+                                if lead == "\"" || lead == "'" {
+                                    if p + 1 < text.len() { lead = text.sub_string(p + 1, 1); }
+                                }
+                                if is_ascii_upper(lead) { boundary = true; }
+                            }
+                            looking = false;
+                        } else if nxt == "\"" || nxt == "'" || nxt == ")" || nxt == "]" || nxt == "}" {
+                            if k < cut.len() { included = k; }
+                            k += 1;
+                        } else {
+                            looking = false;
+                        }
                     }
                 }
             }
         }
         if boundary {
-            end = i;
+            end = included;
             i = 0;
         } else {
             i -= 1;
@@ -921,11 +951,51 @@ fn self_check() {
     if dot_acc.len() > 4000 { return "dot cap"; }
     if dot_acc.len() < 40 { return "dot empty"; }
     if clipped_dot.acceptance_clips != 1 { return "dot clip count"; }
-    if !dot_acc.contains("foo.ts") { return "dot token"; }
-    if dot_acc.sub_string(dot_acc.len() - 4, 4) == "foo." { return "dot split"; }
+    if !dot_acc.contains("foo.ts then continue") { return "dot kept tail"; }
+    if dot_acc.sub_string(dot_acc.len() - 6, 6) == "foo.ts" { return "dot token end"; }
     let dot_flat = one_line(dotted);
     if dot_flat.sub_string(0, dot_acc.len()) != dot_acc { return "dot prefix"; }
     if dot_flat.sub_string(dot_acc.len(), 1) != " " { return "dot boundary"; }
+    let abbrev = "";
+    let a = 0;
+    while abbrev.len() < 1800 {
+        abbrev += "word" + a.to_string() + " ";
+        a += 1;
+    }
+    abbrev += "see etc. then continue with the command ";
+    while abbrev.len() < 4500 {
+        abbrev += "more" + a.to_string() + " ";
+        a += 1;
+    }
+    let clipped_abbrev = normalize_tracks([
+        #{ id: "Abbrev", title: "Abbrev", priority: 1, files: ["abbrev.ts"], acceptance: abbrev },
+        #{ id: "Abbrev2", title: "Abbrev2", priority: 2, files: ["abbrev2.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let abbrev_acc = clipped_abbrev.tracks[0].acceptance;
+    if abbrev_acc.len() > 4000 { return "abbrev cap"; }
+    if !abbrev_acc.contains("etc. then continue") { return "abbrev tail"; }
+    if abbrev_acc.sub_string(abbrev_acc.len() - 4, 4) == "etc." { return "abbrev cut"; }
+    let quoted = "";
+    let q = 0;
+    while quoted.len() < 3900 {
+        quoted += "word" + q.to_string() + " ";
+        q += 1;
+    }
+    quoted += "The check reports \"pass.\") More detail follows ";
+    while quoted.len() < 4600 {
+        quoted += "tail" + q.to_string() + " ";
+        q += 1;
+    }
+    let clipped_quote = normalize_tracks([
+        #{ id: "Quote", title: "Quote", priority: 1, files: ["quote.ts"], acceptance: quoted },
+        #{ id: "Quote2", title: "Quote2", priority: 2, files: ["quote2.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let quote_acc = clipped_quote.tracks[0].acceptance;
+    if quote_acc.len() > 4000 { return "quote cap"; }
+    if quote_acc.len() < 40 { return "quote empty"; }
+    if clipped_quote.acceptance_clips != 1 { return "quote clip count"; }
+    if quote_acc.sub_string(quote_acc.len() - 2, 2) != "\")" { return "quote closers"; }
+    if !quote_acc.contains("pass.") { return "quote pass"; }
     let doc = #{
         goal: "Ship two areas.",
         foundation: ["auth exists"],
