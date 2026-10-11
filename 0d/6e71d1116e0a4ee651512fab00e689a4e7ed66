@@ -1,0 +1,14 @@
+multi-track-plan.rhai
+  h_6000354274ce50 3,201-211,221,223-232,235-254,260,954-955,959-998
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0d6e71d1116e0a4ee651512fab00e689a4e7ed66",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
