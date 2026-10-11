@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-plan",
-    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.8.",
+    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.9.",
     when_to_use: "Before /multi-track-ship, when a goal spans several areas and needs a source plan with tracks, file ownership, and file-backed QA commands. A multi-track-goal-plan file can be the source. Not for one file (implement-from-plan) or the next Linear issue (ship-next-issue).",
     phases: [
         #{ title: "Scope", detail: "read the goal, sources, and file-backed commands" },
@@ -205,8 +205,24 @@ fn is_ascii_alnum(ch) {
     false
 }
 
-fn is_ascii_upper(ch) {
-    ch >= "A" && ch <= "Z"
+fn abbrev_before(text, dot_at) {
+    let start = dot_at;
+    let walking = true;
+    while walking && start > 0 {
+        let c = text.sub_string(start - 1, 1);
+        if is_ascii_alnum(c) || c == "." {
+            start -= 1;
+        } else {
+            walking = false;
+        }
+    }
+    if start >= dot_at { return false; }
+    let token = lower_ascii(text.sub_string(start, dot_at - start));
+    if token == "etc" || token == "eg" || token == "e.g" || token == "ie" || token == "i.e" { return true; }
+    if token == "vs" || token == "mr" || token == "mrs" || token == "dr" || token == "st" { return true; }
+    if token == "jr" || token == "sr" { return true; }
+    if token.len() == 1 && is_ascii_alnum(token) && !(token >= "0" && token <= "9") { return true; }
+    false
 }
 
 fn clip_sentence(s, n) {
@@ -234,17 +250,7 @@ fn clip_sentence(s, n) {
                     } else {
                         let nxt = text.sub_string(k, 1);
                         if nxt == " " {
-                            let p = k + 1;
-                            while p < text.len() && text.sub_string(p, 1) == " " { p += 1; }
-                            if ch != "." {
-                                boundary = true;
-                            } else if p < text.len() {
-                                let lead = text.sub_string(p, 1);
-                                if lead == "\"" || lead == "'" {
-                                    if p + 1 < text.len() { lead = text.sub_string(p + 1, 1); }
-                                }
-                                if is_ascii_upper(lead) { boundary = true; }
-                            }
+                            if ch != "." || !abbrev_before(text, i) { boundary = true; }
                             looking = false;
                         } else if nxt == "\"" || nxt == "'" || nxt == ")" || nxt == "]" || nxt == "}" {
                             if k < cut.len() { included = k; }
@@ -996,6 +1002,27 @@ fn self_check() {
     if clipped_quote.acceptance_clips != 1 { return "quote clip count"; }
     if quote_acc.sub_string(quote_acc.len() - 2, 2) != "\")" { return "quote closers"; }
     if !quote_acc.contains("pass.") { return "quote pass"; }
+    let coded = "";
+    let cix = 0;
+    while coded.len() < 3700 {
+        coded += "word" + cix.to_string() + " ";
+        cix += 1;
+    }
+    coded += "The check passes. npm test then verifies the rest of this acceptance ";
+    while coded.len() < 4600 {
+        coded += "tail" + cix.to_string() + " ";
+        cix += 1;
+    }
+    let clipped_code = normalize_tracks([
+        #{ id: "Code", title: "Code", priority: 1, files: ["code.ts"], acceptance: coded },
+        #{ id: "Code2", title: "Code2", priority: 2, files: ["code2.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let code_acc = clipped_code.tracks[0].acceptance;
+    if code_acc.len() > 4000 { return "code cap"; }
+    if code_acc.len() < 40 { return "code empty"; }
+    if clipped_code.acceptance_clips != 1 { return "code clip count"; }
+    if code_acc.sub_string(code_acc.len() - 7, 7) != "passes." { return "code sentence"; }
+    if code_acc.contains("npm test") { return "code tail kept"; }
     let doc = #{
         goal: "Ship two areas.",
         foundation: ["auth exists"],
