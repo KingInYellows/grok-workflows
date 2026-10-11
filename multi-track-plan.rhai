@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-plan",
-    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.4.",
+    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.9.",
     when_to_use: "Before /multi-track-ship, when a goal spans several areas and needs a source plan with tracks, file ownership, and file-backed QA commands. A multi-track-goal-plan file can be the source. Not for one file (implement-from-plan) or the next Linear issue (ship-next-issue).",
     phases: [
         #{ title: "Scope", detail: "read the goal, sources, and file-backed commands" },
@@ -198,6 +198,100 @@ fn clip(s, n) {
     trimmed(text.sub_string(0, cut))
 }
 
+fn is_ascii_alnum(ch) {
+    if ch >= "a" && ch <= "z" { return true; }
+    if ch >= "A" && ch <= "Z" { return true; }
+    if ch >= "0" && ch <= "9" { return true; }
+    false
+}
+
+fn abbrev_before(text, dot_at) {
+    let start = dot_at;
+    let walking = true;
+    while walking && start > 0 {
+        let c = text.sub_string(start - 1, 1);
+        if is_ascii_alnum(c) || c == "." {
+            start -= 1;
+        } else {
+            walking = false;
+        }
+    }
+    if start >= dot_at { return false; }
+    let token = lower_ascii(text.sub_string(start, dot_at - start));
+    if token == "etc" || token == "eg" || token == "e.g" || token == "ie" || token == "i.e" { return true; }
+    if token == "vs" || token == "mr" || token == "mrs" || token == "dr" || token == "st" { return true; }
+    if token == "jr" || token == "sr" { return true; }
+    if token.len() == 1 && is_ascii_alnum(token) && !(token >= "0" && token <= "9") { return true; }
+    false
+}
+
+fn clip_sentence(s, n) {
+    let text = one_line(s);
+    if text.len() <= n { return #{ text: text, clipped: false }; }
+    let cut = text.sub_string(0, n);
+    let i = cut.len() - 1;
+    let end = -1;
+    while i > 40 {
+        let ch = cut.sub_string(i, 1);
+        let boundary = false;
+        let included = i;
+        if ch == "." || ch == "!" || ch == "?" {
+            let prev = "";
+            if i > 0 { prev = text.sub_string(i - 1, 1); }
+            let immediate = "";
+            if i + 1 < text.len() { immediate = text.sub_string(i + 1, 1); }
+            let internal = is_ascii_alnum(prev) && is_ascii_alnum(immediate);
+            if !internal {
+                let k = i + 1;
+                let looking = true;
+                while looking {
+                    if k >= text.len() {
+                        looking = false;
+                    } else {
+                        let nxt = text.sub_string(k, 1);
+                        if nxt == " " {
+                            if ch != "." || !abbrev_before(text, i) { boundary = true; }
+                            looking = false;
+                        } else if nxt == "\"" || nxt == "'" || nxt == ")" || nxt == "]" || nxt == "}" {
+                            if k < cut.len() { included = k; }
+                            k += 1;
+                        } else {
+                            looking = false;
+                        }
+                    }
+                }
+            }
+        }
+        if boundary {
+            end = included;
+            i = 0;
+        } else {
+            i -= 1;
+        }
+    }
+    if end > 40 {
+        return #{ text: trimmed(cut.sub_string(0, end + 1)), clipped: true };
+    }
+    let space = -1;
+    let j = cut.len() - 1;
+    while j > 0 {
+        if cut.sub_string(j, 1) == " " {
+            space = j;
+            j = 0;
+        } else {
+            j -= 1;
+        }
+    }
+    if space > 0 {
+        return #{ text: trimmed(cut.sub_string(0, space)), clipped: true };
+    }
+    let marker = " [truncated]";
+    if cut.len() > marker.len() {
+        return #{ text: cut.sub_string(0, cut.len() - marker.len()) + marker, clipped: true };
+    }
+    #{ text: marker, clipped: true }
+}
+
 fn one_line(s) {
     let text = trimmed(s);
     let out = "";
@@ -384,6 +478,7 @@ fn normalize_tracks(raw, max_tracks, max_files) {
     let pending = [];
     let dropped = 0;
     let file_drops = 0;
+    let acc_clips = 0;
     let used = [];
     for item in as_array(raw) {
         let base = slug_id(map_str(item, "id"));
@@ -402,7 +497,9 @@ fn normalize_tracks(raw, max_tracks, max_files) {
                 if title == "" { title = id; }
                 let pri = as_int(map_get(item, "priority"), 50, 1, 100);
                 let actions = clean_lines(map_get(item, "actions"), 8);
-                let acc = clip(one_line(map_str(item, "acceptance")), 400);
+                let acc_row = clip_sentence(map_str(item, "acceptance"), 4000);
+                if acc_row.clipped { acc_clips += 1; }
+                let acc = acc_row.text;
                 let checks = clip(one_line(map_str(item, "pipeline_checks")), 300);
                 pending.push(#{
                     id: id,
@@ -456,6 +553,7 @@ fn normalize_tracks(raw, max_tracks, max_files) {
         dropped: dropped,
         file_drops: file_drops,
         overlaps: overlaps_of(capped),
+        acceptance_clips: acc_clips,
     }
 }
 
@@ -777,6 +875,154 @@ fn self_check() {
     }
     let capped = normalize_tracks(raw, 2, 20);
     if capped.tracks.len() != 2 { return "cap tracks"; }
+    let long_acc = "";
+    let k = 0;
+    while k < 90 {
+        long_acc += "step " + k.to_string() + " fails npm test. ";
+        k += 1;
+    }
+    let kept_long = normalize_tracks([
+        #{ id: "Long", title: "Long", priority: 1, files: ["long.ts"], acceptance: long_acc },
+        #{ id: "Short", title: "Short", priority: 2, files: ["short.ts"], acceptance: "b passes" },
+    ], 8, 20);
+    if kept_long.tracks[0].id != "long" { return "long id"; }
+    if kept_long.tracks[0].acceptance != trimmed(long_acc) { return "acceptance clip"; }
+    if kept_long.acceptance_clips != 0 { return "acceptance clips"; }
+    let huge = "";
+    let h = 0;
+    while h < 200 {
+        huge += "Sentence " + h.to_string() + " must stay whole. ";
+        h += 1;
+    }
+    let clipped_huge = normalize_tracks([
+        #{ id: "Huge", title: "Huge", priority: 1, files: ["huge.ts"], acceptance: huge },
+        #{ id: "Other", title: "Other", priority: 2, files: ["other.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let huge_acc = clipped_huge.tracks[0].acceptance;
+    if huge_acc.len() > 4000 { return "acceptance cap"; }
+    if huge_acc.len() < 40 { return "acceptance empty cut"; }
+    if huge_acc.sub_string(huge_acc.len() - 1, 1) != "." { return "acceptance boundary"; }
+    if !huge_acc.contains("Sentence 0") { return "acceptance start"; }
+    if clipped_huge.acceptance_clips != 1 { return "acceptance clip count"; }
+    let wordy = "";
+    let w = 0;
+    while w < 700 {
+        wordy += "token" + w.to_string() + " ";
+        w += 1;
+    }
+    let clipped_word = normalize_tracks([
+        #{ id: "Word", title: "Word", priority: 1, files: ["word.ts"], acceptance: wordy },
+        #{ id: "Wordb", title: "Wordb", priority: 2, files: ["wordb.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let word_acc = clipped_word.tracks[0].acceptance;
+    if word_acc.len() > 4000 { return "word cap"; }
+    if word_acc.len() < 40 { return "word empty cut"; }
+    if clipped_word.acceptance_clips != 1 { return "word clip count"; }
+    let word_flat = one_line(wordy);
+    if word_acc.len() >= word_flat.len() { return "word not clipped"; }
+    if word_flat.sub_string(0, word_acc.len()) != word_acc { return "word prefix"; }
+    if word_flat.sub_string(word_acc.len(), 1) != " " { return "word boundary"; }
+    let blob = "";
+    let b = 0;
+    while b < 4100 {
+        blob += "x";
+        b += 1;
+    }
+    let clipped_blob = normalize_tracks([
+        #{ id: "Blob", title: "Blob", priority: 1, files: ["blob.ts"], acceptance: blob },
+        #{ id: "Blob2", title: "Blob2", priority: 2, files: ["blob2.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let blob_acc = clipped_blob.tracks[0].acceptance;
+    if blob_acc.len() > 4000 { return "blob cap"; }
+    if blob_acc.len() < 40 { return "blob empty"; }
+    if clipped_blob.acceptance_clips != 1 { return "blob clip count"; }
+    if blob_acc.sub_string(blob_acc.len() - 12, 12) != " [truncated]" { return "blob marker"; }
+    if blob_acc.sub_string(0, blob_acc.len() - 12) != blob.sub_string(0, blob_acc.len() - 12) { return "blob prefix"; }
+    let dotted = "";
+    let d = 0;
+    while dotted.len() < 3900 {
+        dotted += "word" + d.to_string() + " ";
+        d += 1;
+    }
+    dotted += "edit foo.ts then continue ";
+    while dotted.len() < 4500 {
+        dotted += "more" + d.to_string() + " ";
+        d += 1;
+    }
+    let clipped_dot = normalize_tracks([
+        #{ id: "Dot", title: "Dot", priority: 1, files: ["dot.ts"], acceptance: dotted },
+        #{ id: "Dot2", title: "Dot2", priority: 2, files: ["dot2.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let dot_acc = clipped_dot.tracks[0].acceptance;
+    if dot_acc.len() > 4000 { return "dot cap"; }
+    if dot_acc.len() < 40 { return "dot empty"; }
+    if clipped_dot.acceptance_clips != 1 { return "dot clip count"; }
+    if !dot_acc.contains("foo.ts then continue") { return "dot kept tail"; }
+    if dot_acc.sub_string(dot_acc.len() - 6, 6) == "foo.ts" { return "dot token end"; }
+    let dot_flat = one_line(dotted);
+    if dot_flat.sub_string(0, dot_acc.len()) != dot_acc { return "dot prefix"; }
+    if dot_flat.sub_string(dot_acc.len(), 1) != " " { return "dot boundary"; }
+    let abbrev = "";
+    let a = 0;
+    while abbrev.len() < 1800 {
+        abbrev += "word" + a.to_string() + " ";
+        a += 1;
+    }
+    abbrev += "see etc. then continue with the command ";
+    while abbrev.len() < 4500 {
+        abbrev += "more" + a.to_string() + " ";
+        a += 1;
+    }
+    let clipped_abbrev = normalize_tracks([
+        #{ id: "Abbrev", title: "Abbrev", priority: 1, files: ["abbrev.ts"], acceptance: abbrev },
+        #{ id: "Abbrev2", title: "Abbrev2", priority: 2, files: ["abbrev2.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let abbrev_acc = clipped_abbrev.tracks[0].acceptance;
+    if abbrev_acc.len() > 4000 { return "abbrev cap"; }
+    if !abbrev_acc.contains("etc. then continue") { return "abbrev tail"; }
+    if abbrev_acc.sub_string(abbrev_acc.len() - 4, 4) == "etc." { return "abbrev cut"; }
+    let quoted = "";
+    let q = 0;
+    while quoted.len() < 3900 {
+        quoted += "word" + q.to_string() + " ";
+        q += 1;
+    }
+    quoted += "The check reports \"pass.\") More detail follows ";
+    while quoted.len() < 4600 {
+        quoted += "tail" + q.to_string() + " ";
+        q += 1;
+    }
+    let clipped_quote = normalize_tracks([
+        #{ id: "Quote", title: "Quote", priority: 1, files: ["quote.ts"], acceptance: quoted },
+        #{ id: "Quote2", title: "Quote2", priority: 2, files: ["quote2.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let quote_acc = clipped_quote.tracks[0].acceptance;
+    if quote_acc.len() > 4000 { return "quote cap"; }
+    if quote_acc.len() < 40 { return "quote empty"; }
+    if clipped_quote.acceptance_clips != 1 { return "quote clip count"; }
+    if quote_acc.sub_string(quote_acc.len() - 2, 2) != "\")" { return "quote closers"; }
+    if !quote_acc.contains("pass.") { return "quote pass"; }
+    let coded = "";
+    let cix = 0;
+    while coded.len() < 3700 {
+        coded += "word" + cix.to_string() + " ";
+        cix += 1;
+    }
+    coded += "The check passes. npm test then verifies the rest of this acceptance ";
+    while coded.len() < 4600 {
+        coded += "tail" + cix.to_string() + " ";
+        cix += 1;
+    }
+    let clipped_code = normalize_tracks([
+        #{ id: "Code", title: "Code", priority: 1, files: ["code.ts"], acceptance: coded },
+        #{ id: "Code2", title: "Code2", priority: 2, files: ["code2.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let code_acc = clipped_code.tracks[0].acceptance;
+    if code_acc.len() > 4000 { return "code cap"; }
+    if code_acc.len() < 40 { return "code empty"; }
+    if clipped_code.acceptance_clips != 1 { return "code clip count"; }
+    if code_acc.sub_string(code_acc.len() - 7, 7) != "passes." { return "code sentence"; }
+    if code_acc.contains("npm test") { return "code tail kept"; }
     let doc = #{
         goal: "Ship two areas.",
         foundation: ["auth exists"],
@@ -1144,6 +1390,7 @@ fn merge_lines(left, right, cap) {
 let norm = normalize_tracks(map_get(draft_out, "tracks"), max_tracks, 20);
 if norm.dropped > 0 { log("Dropped tracks: " + norm.dropped.to_string()); }
 if norm.file_drops > 0 { log("Dropped file paths: " + norm.file_drops.to_string()); }
+if norm.acceptance_clips > 0 { log("Clipped acceptance without splitting a word: " + norm.acceptance_clips.to_string()); }
 if norm.tracks.len() < 2 {
     pause("verification", "Draft produced fewer than 2 tracks with real files. Single-area work belongs on implement-from-plan. Fix args.goal or sources and resume.");
 }
@@ -1315,6 +1562,7 @@ if skeptic_miss == 0 {
             foundation = merge_lines(foundation.lines, more_found.lines, 16);
             excluded = merge_lines(excluded.lines, more_skip.lines, 20);
             log("Revise kept " + norm.tracks.len().to_string() + " tracks");
+            if norm.acceptance_clips > 0 { log("Clipped acceptance without splitting a word: " + norm.acceptance_clips.to_string()); }
             let re_overlap = bullet_list(norm.overlaps, "(no shared owner files)");
             let re_file_prompt = "";
             re_file_prompt += fence();
