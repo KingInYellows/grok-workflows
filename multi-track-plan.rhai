@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-plan",
-    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.5.",
+    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.6.",
     when_to_use: "Before /multi-track-ship, when a goal spans several areas and needs a source plan with tracks, file ownership, and file-backed QA commands. A multi-track-goal-plan file can be the source. Not for one file (implement-from-plan) or the next Linear issue (ship-next-issue).",
     phases: [
         #{ title: "Scope", detail: "read the goal, sources, and file-backed commands" },
@@ -216,7 +216,24 @@ fn clip_sentence(s, n) {
     if end > 40 {
         return #{ text: trimmed(cut.sub_string(0, end + 1)), clipped: true };
     }
-    #{ text: trimmed(cut), clipped: true }
+    let space = -1;
+    let j = cut.len() - 1;
+    while j > 0 {
+        if cut.sub_string(j, 1) == " " {
+            space = j;
+            j = 0;
+        } else {
+            j -= 1;
+        }
+    }
+    if space > 0 {
+        return #{ text: trimmed(cut.sub_string(0, space)), clipped: true };
+    }
+    let marker = " [truncated]";
+    if cut.len() > marker.len() {
+        return #{ text: cut.sub_string(0, cut.len() - marker.len()) + marker, clipped: true };
+    }
+    #{ text: marker, clipped: true }
 }
 
 fn one_line(s) {
@@ -831,6 +848,40 @@ fn self_check() {
     if huge_acc.sub_string(huge_acc.len() - 1, 1) != "." { return "acceptance boundary"; }
     if !huge_acc.contains("Sentence 0") { return "acceptance start"; }
     if clipped_huge.acceptance_clips != 1 { return "acceptance clip count"; }
+    let wordy = "";
+    let w = 0;
+    while w < 700 {
+        wordy += "token" + w.to_string() + " ";
+        w += 1;
+    }
+    let clipped_word = normalize_tracks([
+        #{ id: "Word", title: "Word", priority: 1, files: ["word.ts"], acceptance: wordy },
+        #{ id: "Wordb", title: "Wordb", priority: 2, files: ["wordb.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let word_acc = clipped_word.tracks[0].acceptance;
+    if word_acc.len() > 4000 { return "word cap"; }
+    if word_acc.len() < 40 { return "word empty cut"; }
+    if clipped_word.acceptance_clips != 1 { return "word clip count"; }
+    let word_flat = one_line(wordy);
+    if word_acc.len() >= word_flat.len() { return "word not clipped"; }
+    if word_flat.sub_string(0, word_acc.len()) != word_acc { return "word prefix"; }
+    if word_flat.sub_string(word_acc.len(), 1) != " " { return "word boundary"; }
+    let blob = "";
+    let b = 0;
+    while b < 4100 {
+        blob += "x";
+        b += 1;
+    }
+    let clipped_blob = normalize_tracks([
+        #{ id: "Blob", title: "Blob", priority: 1, files: ["blob.ts"], acceptance: blob },
+        #{ id: "Blob2", title: "Blob2", priority: 2, files: ["blob2.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let blob_acc = clipped_blob.tracks[0].acceptance;
+    if blob_acc.len() > 4000 { return "blob cap"; }
+    if blob_acc.len() < 40 { return "blob empty"; }
+    if clipped_blob.acceptance_clips != 1 { return "blob clip count"; }
+    if blob_acc.sub_string(blob_acc.len() - 12, 12) != " [truncated]" { return "blob marker"; }
+    if blob_acc.sub_string(0, blob_acc.len() - 12) != blob.sub_string(0, blob_acc.len() - 12) { return "blob prefix"; }
     let doc = #{
         goal: "Ship two areas.",
         foundation: ["auth exists"],
@@ -1198,7 +1249,7 @@ fn merge_lines(left, right, cap) {
 let norm = normalize_tracks(map_get(draft_out, "tracks"), max_tracks, 20);
 if norm.dropped > 0 { log("Dropped tracks: " + norm.dropped.to_string()); }
 if norm.file_drops > 0 { log("Dropped file paths: " + norm.file_drops.to_string()); }
-if norm.acceptance_clips > 0 { log("Clipped acceptance on a sentence boundary: " + norm.acceptance_clips.to_string()); }
+if norm.acceptance_clips > 0 { log("Clipped acceptance without splitting a word: " + norm.acceptance_clips.to_string()); }
 if norm.tracks.len() < 2 {
     pause("verification", "Draft produced fewer than 2 tracks with real files. Single-area work belongs on implement-from-plan. Fix args.goal or sources and resume.");
 }
@@ -1370,7 +1421,7 @@ if skeptic_miss == 0 {
             foundation = merge_lines(foundation.lines, more_found.lines, 16);
             excluded = merge_lines(excluded.lines, more_skip.lines, 20);
             log("Revise kept " + norm.tracks.len().to_string() + " tracks");
-            if norm.acceptance_clips > 0 { log("Clipped acceptance on a sentence boundary: " + norm.acceptance_clips.to_string()); }
+            if norm.acceptance_clips > 0 { log("Clipped acceptance without splitting a word: " + norm.acceptance_clips.to_string()); }
             let re_overlap = bullet_list(norm.overlaps, "(no shared owner files)");
             let re_file_prompt = "";
             re_file_prompt += fence();
