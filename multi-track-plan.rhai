@@ -1,6 +1,6 @@
 let meta = #{
     name: "multi-track-plan",
-    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.6.",
+    description: "Write one multi-track source plan for multi-track-ship. Does not implement. Version 1.0.7.",
     when_to_use: "Before /multi-track-ship, when a goal spans several areas and needs a source plan with tracks, file ownership, and file-backed QA commands. A multi-track-goal-plan file can be the source. Not for one file (implement-from-plan) or the next Linear issue (ship-next-issue).",
     phases: [
         #{ title: "Scope", detail: "read the goal, sources, and file-backed commands" },
@@ -206,7 +206,27 @@ fn clip_sentence(s, n) {
     let end = -1;
     while i > 40 {
         let ch = cut.sub_string(i, 1);
+        let boundary = false;
         if ch == "." || ch == "!" || ch == "?" {
+            let k = i + 1;
+            let looking = true;
+            while looking {
+                if k >= text.len() {
+                    looking = false;
+                } else {
+                    let nxt = text.sub_string(k, 1);
+                    if nxt == " " {
+                        boundary = true;
+                        looking = false;
+                    } else if nxt == "\"" || nxt == "'" || nxt == ")" || nxt == "]" || nxt == "}" {
+                        k += 1;
+                    } else {
+                        looking = false;
+                    }
+                }
+            }
+        }
+        if boundary {
             end = i;
             i = 0;
         } else {
@@ -882,6 +902,30 @@ fn self_check() {
     if clipped_blob.acceptance_clips != 1 { return "blob clip count"; }
     if blob_acc.sub_string(blob_acc.len() - 12, 12) != " [truncated]" { return "blob marker"; }
     if blob_acc.sub_string(0, blob_acc.len() - 12) != blob.sub_string(0, blob_acc.len() - 12) { return "blob prefix"; }
+    let dotted = "";
+    let d = 0;
+    while dotted.len() < 3900 {
+        dotted += "word" + d.to_string() + " ";
+        d += 1;
+    }
+    dotted += "edit foo.ts then continue ";
+    while dotted.len() < 4500 {
+        dotted += "more" + d.to_string() + " ";
+        d += 1;
+    }
+    let clipped_dot = normalize_tracks([
+        #{ id: "Dot", title: "Dot", priority: 1, files: ["dot.ts"], acceptance: dotted },
+        #{ id: "Dot2", title: "Dot2", priority: 2, files: ["dot2.ts"], acceptance: "ok" },
+    ], 8, 20);
+    let dot_acc = clipped_dot.tracks[0].acceptance;
+    if dot_acc.len() > 4000 { return "dot cap"; }
+    if dot_acc.len() < 40 { return "dot empty"; }
+    if clipped_dot.acceptance_clips != 1 { return "dot clip count"; }
+    if !dot_acc.contains("foo.ts") { return "dot token"; }
+    if dot_acc.sub_string(dot_acc.len() - 4, 4) == "foo." { return "dot split"; }
+    let dot_flat = one_line(dotted);
+    if dot_flat.sub_string(0, dot_acc.len()) != dot_acc { return "dot prefix"; }
+    if dot_flat.sub_string(dot_acc.len(), 1) != " " { return "dot boundary"; }
     let doc = #{
         goal: "Ship two areas.",
         foundation: ["auth exists"],
