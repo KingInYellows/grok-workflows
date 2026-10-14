@@ -231,6 +231,26 @@ test('actual lane routing verifies unknown severity as a blocker with an explici
   assert.equal(result.warnings.length,1);
   assert.equal(result.warnings[0].severity,'warn');
   assert.equal(result.coverage_incomplete,true);
+  // Every normalized item owns a string field, including ordinary block/warn.
+  // The verifier packet can safely read it under strict map-property settings.
+  assert.equal(result.blockers[0].severity_reason,'');
+  assert.equal(result.warnings[0].severity_reason,'');
+  const packetStart = gate.indexOf('        let encoded = json_encode(#{');
+  const packetEnd = gate.indexOf('        let vp =',packetStart);
+  assert(packetStart > 0 && packetEnd > packetStart);
+  const packetJS = gate.slice(packetStart,packetEnd).replace(/#\{/g,'{');
+  for (const item of [...result.blockers,...result.warnings]) {
+    assert(Object.hasOwn(item,'severity_reason'));
+    assert.equal(typeof item.severity_reason,'string');
+    const strictItem = new Proxy(item,{get(target,key) {
+      if (!Object.hasOwn(target,key)) throw Error('Missing map property: '+String(key));
+      return target[key];
+    }});
+    const packetContext = vm.createContext({f:strictItem,json_encode:JSON.stringify});
+    const encoded = vm.runInContext(packetJS+'\nencoded',packetContext);
+    assert.equal(JSON.parse(encoded).severity_reason,item.severity_reason);
+  }
+  assert.match(gate,/if trimmed\(it.severity_reason\) != ""/);
   for (const item of result.blockers.slice(1)) {
     assert.equal(item.severity,'block');
     assert.match(item.severity_reason,/Unknown scanner severity.*candidate blocker pending verification/);
