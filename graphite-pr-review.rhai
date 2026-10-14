@@ -285,6 +285,24 @@ fn ids_all_in(ids, allowed) {
     true
 }
 
+// Check the final accepted/capped plan, not merely each candidate's membership.
+// A plan-skeptic rejection rejects that repair proposal; it does not refute an
+// already-confirmed source finding. Triage false positives never enter kept_ids.
+fn missing_repair_sources(kept_ids, repairs) {
+    let covered = [];
+    for repair in repairs {
+        for item in as_array(map_get(repair, "source_ids")) {
+            let id = trimmed(item);
+            if id != "" && !list_has(covered, id) { covered.push(id); }
+        }
+    }
+    let missing = [];
+    for id in kept_ids {
+        if !list_has(covered, id) && !list_has(missing, id) { missing.push(id); }
+    }
+    return missing;
+}
+
 fn agent_map(r) {
     if r == () || r.success != true || r.output == () { return (); }
     if type_of(r.output) != "map" { return (); }
@@ -1312,6 +1330,15 @@ if repairs.len() > 0 {
 }
 if dropped_repairs > 0 {
     log("dropped " + dropped_repairs.to_string() + " repairs");
+}
+
+// Run after all planner filtering, plan verification, and edit-file caps.
+let uncovered_sources = missing_repair_sources(kept_ids, repairs);
+if uncovered_sources.len() > 0 {
+    coverage_complete = false;
+    for id in uncovered_sources {
+        coverage_notes.push("Confirmed source has no accepted repair after planning/caps: " + id);
+    }
 }
 
 phase("Repair");
