@@ -573,6 +573,11 @@ if !auto_approve {
 // --- helper: run pipeline agent ----------------------------------------------
 
 // Rhai nested fns do not close over outer lets — pass schema in explicitly.
+// Keep the pass decision independent of prior attempts' cached report text.
+fn pipeline_can_pass(success, passed, has_evidence) {
+    return success && passed && has_evidence;
+}
+
 fn run_pipeline(label_sfx, written_plan, qa_dir, plan_goal, tracks_blob, order_blob, mode_note, full, pipe_schema) {
     let pp = "";
     pp += "You are the SHARED QA PIPELINE RUNNER for multi-track-ship. Fail closed. User must be able to open artifacts.\n";
@@ -703,6 +708,7 @@ while attempt < max_attempts {
     phase("Pipeline");
     log("Full pipeline attempt " + attempt.to_string() + "/" + max_attempts.to_string());
 
+    last_pipe_evidence = "";
     let pr = run_pipeline("full-" + attempt.to_string(), written_plan, qa_dir, plan_goal, tracks_blob, order_blob, "FULL batch pipeline", true, pipeline_schema);
 
     let ok = false;
@@ -722,7 +728,7 @@ while attempt < max_attempts {
                 last_track_results += "- " + id + " ok=" + tok.to_string() + " " + note + "\n";
             }
         }
-        if o.passed == true && last_pipe_evidence != () && trimmed(last_pipe_evidence) != "" {
+        if pipeline_can_pass(pr.success == true, o.passed == true, trimmed(last_pipe_evidence) != "") {
             ok = true;
         } else if o.passed == true {
             log("Pipeline claimed pass without evidence — fail closed");
@@ -911,6 +917,9 @@ if !pipeline_passed {
         vfp += "FIX after failed local visual/perf. Process: " + written_plan + " QA: " + qa_dir + "\n";
         vfp += "Vis: " + vp_vis_ev + "\nPerf: " + vp_perf_ev + "\nFail:\n" + vp_fail;
         vfp += "Fix root causes; update process file.\n";
+        // Any writer invalidates the previous pipeline, even if it later fails.
+        pipeline_passed = false;
+        last_pipe_evidence = "";
         let vfr = agent(vfp, #{
             label: "fix-vp:" + vp_fix_round.to_string(),
             capability_mode: "all",
@@ -919,6 +928,29 @@ if !pipeline_passed {
         if vfr != () && vfr.success && vfr.output != () {
             let fs = if vfr.output.summary != () { vfr.output.summary } else { "" };
             vp_fix_log += "- " + fs + "\n";
+        }
+
+        // Recheck the full shared pipeline on the repaired tree before visual
+        // verification or completion. A failed rerun stops this bounded loop.
+        let post_vp = run_pipeline("after-vp-" + vp_fix_round.to_string(), written_plan, qa_dir, plan_goal, tracks_blob, order_blob, "FULL pipeline after visual/perf repair", true, pipeline_schema);
+        last_pipe_summary = "pipeline after visual/perf repair failed";
+        last_pipe_failures = "- missing or failed pipeline result\n";
+        last_pipe_artifacts = "";
+        last_pipe_commands = "";
+        last_track_results = "";
+        if post_vp != () && post_vp.success == true && post_vp.output != () {
+            let po = post_vp.output;
+            if po.summary != () { last_pipe_summary = po.summary; }
+            if po.evidence != () { last_pipe_evidence = po.evidence; }
+            last_pipe_failures = join_lines(po.failures, "- ");
+            last_pipe_artifacts = join_lines(po.artifacts, "- ");
+            last_pipe_commands = join_lines(po.commands_run, "- ");
+            if po.track_results != () { last_track_results = json_encode(po.track_results); }
+            pipeline_passed = pipeline_can_pass(post_vp.success == true, po.passed == true, trimmed(last_pipe_evidence) != "");
+        }
+        if !pipeline_passed {
+            vp_fix_log += "- shared pipeline failed after visual/perf repair; stopped\n";
+            break;
         }
     }
 }
