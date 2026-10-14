@@ -117,7 +117,7 @@ fn join_strings(items) {
 }
 
 fn support_cli() {
-    "$HOME/projects/grok-workflows/workflow-support/graphite-stack-review/cli.mjs"
+    "-e \"const p=require('node:path');const r=require('node:child_process').spawnSync(process.execPath,[p.join(process.env.GROK_HOME||p.join(require('node:os').homedir(),'.grok'),'workflow-support','graphite-stack-review','cli.mjs'),...process.argv.slice(1)],{stdio:'inherit'});process.exit(r.status===null?1:r.status)\" --"
 }
 
 fn is_canned(m) {
@@ -142,7 +142,7 @@ fn guardrails_text() {
     t += "- Never fetch or checkout origin pr/N. Never gt checkout of pr/N.\n";
     t += "- Always pass --no-interactive to gt.\n";
     t += "- Do not gt track a branch Graphite calls untracked. That name is the worktree, not a stack parent.\n";
-    t += "- Submit flags are --no-edit --update-only. Publish is a second submit that adds only --publish.\n";
+    t += "- All submits use --no-edit. When a PR is confirmed absent, create it without --update-only; when a PR already exists, use --update-only. Authentication, network, or ambiguous lookup failures never prove absence. Publish is a second submit for the verified existing PR with --publish --no-edit --update-only.\n";
     t += "- Ignore Graphite mergeability_check when it is unknown or UNSTABLE.\n";
     t += "- Do not read .graphite.yml as Graphite CLI configuration.\n";
     t += "- Do not close the Linear issue. Never set a completed or canceled state.\n";
@@ -1073,10 +1073,10 @@ fn submit_prompt(ticket) {
     p += "Steps:\n";
     p += "1. gt --no-interactive checkout the branch_name.\n";
     p += "2. Read git rev-parse HEAD and gh pr view --json number,url,isDraft,headRefOid for this branch.\n";
-    p += "3. When no PR exists, or HEAD differs from headRefOid, run gt --no-interactive submit --no-edit --update-only. Do not pass --stack, --force, or --merge-when-ready.\n";
+    p += "3. When no PR exists, run gt --no-interactive submit --no-edit (without --update-only). When an existing PR has a different headRefOid, run gt --no-interactive submit --no-edit --update-only. If gh failed for authentication, network, or another uncertain reason, stop instead of treating that as no PR. Do not pass --stack, --force, or --merge-when-ready.\n";
     p += "4. When gh still shows isDraft true, run gt --no-interactive submit --publish --no-edit --update-only.\n";
     p += "5. The PR body must contain a line Refs IDENTIFIER and the Linear URL. Do not write Fixes, Closes, or Resolves. Use gh pr edit when the body is missing that line.\n";
-    p += "6. Call linear__save_issue links with the PR url and title. Append only. Do not change state to completed.\n";
+    p += "6. Re-read gh pr view --json number,url,headRefOid. Require a positive PR number, its actual https://github.com/ PR URL, and headRefOid equal to git rev-parse HEAD. If verification fails, return submitted=false and do not link Linear. Otherwise call linear__save_issue links with that verified PR url and title. Append only. Do not change state to completed.\n";
     p += "Set pr to the PR number, url to the PR url, submitted true when submit ran or the remote oid already matched, and published true when the PR is not a draft.\n";
     p += packet_line(#{
         identifier: map_str(ticket, "identifier"),

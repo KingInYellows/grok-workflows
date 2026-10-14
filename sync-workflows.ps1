@@ -1,9 +1,10 @@
-# Copy *.rhai from this repo into Grok's real config directories.
-# Usage: .\sync-workflows.ps1 [-DryRun] [-Prune]
+# Copy workflows and runtime helpers into explicitly selected Grok homes.
+# Usage: .\sync-workflows.ps1 [-DryRun] [-Prune] [-Destination <additional Grok homes>]
 [CmdletBinding()]
 param(
     [switch]$DryRun,
-    [switch]$Prune
+    [switch]$Prune,
+    [string[]]$Destination = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,17 +65,23 @@ function Sync-One {
     Write-Host "-> $Dest  added=$added updated=$updated unchanged=$skipped pruned=$pruned"
 }
 
-$Dests = New-Object System.Collections.Generic.List[string]
-$Dests.Add((Join-Path $env:USERPROFILE ".grok\workflows")) | Out-Null
-
-try {
-    $wslHome = (wsl -d Ubuntu-24.04 -- bash -lc "printf %s `$HOME" 2>$null)
-    if ($LASTEXITCODE -eq 0 -and $wslHome) {
-        $unc = "\\wsl$\Ubuntu-24.04" + ($wslHome -replace "/", "\") + "\.grok\workflows"
-        $Dests.Add($unc) | Out-Null
+function Sync-Support {
+    param([string]$GrokHome)
+    $Support = Join-Path $Repo "workflow-support"
+    Get-ChildItem -LiteralPath $Support -Recurse -File -Filter *.mjs | Where-Object { $_.Name -notlike '*.test.mjs' } | ForEach-Object {
+        $relative = $_.FullName.Substring($Repo.Length).TrimStart([char[]]"\/")
+        $target = Join-Path $GrokHome $relative
+        $source = $_.FullName
+        if ((Test-Path -LiteralPath $target) -and ((Get-FileHash -LiteralPath $source).Hash -eq (Get-FileHash -LiteralPath $target).Hash)) { return }
+        Invoke-Step { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null } "mkdir parent of $target"
+        Invoke-Step { Copy-Item -LiteralPath $source -Destination $target -Force } "copy $source -> $target"
     }
-} catch {
-    # WSL not available from this shell; Windows dest is still synced.
+}
+
+$DefaultHome = if ($env:GROK_HOME) { $env:GROK_HOME } else { Join-Path $HOME ".grok" }
+$Dests = @($DefaultHome) + $Destination
+foreach ($dest in $Dests) {
+    if ([string]::IsNullOrWhiteSpace($dest)) { throw "Destination must be a Grok home" }
 }
 
 Write-Host "source  $Repo ($($Sources.Count) workflows)"
@@ -82,5 +89,6 @@ $seen = @{}
 foreach ($dest in $Dests) {
     if ($seen.ContainsKey($dest)) { continue }
     $seen[$dest] = $true
-    Sync-One -Dest $dest
+    Sync-One -Dest (Join-Path $dest "workflows")
+    Sync-Support -GrokHome $dest
 }

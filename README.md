@@ -2,7 +2,7 @@
 
 Personal library of [Grok Build](https://x.ai/cli) workflow files (`.rhai`).
 
-Grok loads user-level workflows from real files in `~/.grok/workflows/` (not a symlink). This git repo is the source of truth. After a pull, run the sync script to copy `*.rhai` into the config dirs.
+Grok loads user-level workflows from real files under `${GROK_HOME:-$HOME/.grok}/workflows/` (not a symlink). This git repo is the source of truth. After a pull, run the sync script to copy workflows and their bundled support helpers into the chosen Grok home.
 
 ## Workflows
 
@@ -25,7 +25,7 @@ Grok loads user-level workflows from real files in `~/.grok/workflows/` (not a s
 | `/linear-organize` | Health pass for the current git checkout. The Linear team matches the origin repository name, or `args.team` |
 | `/multi-track-goal-plan` | Review the repo and open issues, pick the next multi-area goal, and write the file that launches `/multi-track-plan`. Does not implement |
 | `/multi-track-plan` | Read a multi-track goal and write the source plan that launches `/multi-track-ship`. Does not implement |
-| `/multi-track-ship` | Multi-track ship: read a multi-area plan and implement tracks in parallel |
+| `/multi-track-ship` | Multi-track ship: implement tracks sequentially in one shared worktree, then run shared verification; diagnosis can run in parallel |
 | `/preflight` | Universal pre-commit/pre-PR gate: map the change set, multi-dimension review |
 | `/preflight-gate` | Read-only pre-commit gate: review the diff, audit tests from `AGENTS.md`, scan for secrets, then SHIP or BLOCK |
 | `/repo-map` | Read-only map of repo layout, real test/lint commands, and the smallest safe change |
@@ -34,42 +34,55 @@ Grok loads user-level workflows from real files in `~/.grok/workflows/` (not a s
 | `/tech-debt-scan` | Scan one git root for technical debt and overwrite `TECH_DEBT.md` with a verified remediation plan |
 | `/workspace-map` | Read-only map of git roots, stacks, and verified commands in a multi-repo workspace |
 
-## Local layout
+## Prerequisites and layout
+
+- Grok Build with workflow support. This repair was statically checked against 1.0.52 host behavior; that is not an end-to-end execution certification.
+- Node.js 18+ for the bundled Graphite helper; Git, GitHub CLI (`gh`), and Graphite CLI (`gt`) on PATH for Graphite workflows. Authenticate `gh` and `gt` yourself before a live run. The installer does not install binaries or change authentication.
+- Project-specific test tools and any requested MCP integrations (for example Linear) must also be available.
+
+The clone can live anywhere. Both installers honor `GROK_HOME`, falling back to the current user's `.grok` directory. They install:
 
 ```text
-~/projects/grok-workflows              # this git repo (source of truth)
-~/.grok/workflows/*.rhai               # WSL Grok 1.0.46 config copies (real files)
-%USERPROFILE%\.grok\workflows\*.rhai  # Windows grok.exe config copies
+<Grok home>/workflows/*.rhai
+<Grok home>/workflow-support/graphite-stack-review/cli.mjs
+<Grok home>/workflow-support/graphite-stack-review/lib.mjs
 ```
 
-Grok only executes `*.rhai` files in those config directories. Do not symlink the config dir at the git repo; the harness may not load workflows through a directory symlink.
+The four Graphite helper consumers use a shell-neutral Node launcher, resolving `GROK_HOME` or Node's home directory at execution time. Paths containing spaces are passed as arguments, never interpolated into a shell command. Run Grok with the same `GROK_HOME` used to install. `GRAPHITE_STACK_REVIEW_HOME` separately overrides helper checkpoint/lock storage; it does not select the installed CLI. Without that override, state also follows `GROK_HOME`.
+
+Do not symlink the user workflow directory to this clone. Project-scoped `.grok/workflows/`, explicit workflow paths, and inline scripts are other supported launch mechanisms; these scripts install user-level copies only.
 
 ## Sync repo → Grok config
 
-From WSL:
+From a Bash shell in this clone:
 
 ```bash
-cd ~/projects/grok-workflows
-./sync-workflows.sh            # copy *.rhai into WSL + Windows grok homes
-./sync-workflows.sh --dry-run  # show what would change
-./sync-workflows.sh --prune    # also delete dest *.rhai files not in this repo
-./scripts/verify.sh            # check the in-repo Graphite monitor CLI
+./sync-workflows.sh                  # current user's Grok home only
+./sync-workflows.sh --dry-run        # preview without writing
+GROK_HOME="/path/custom grok" ./sync-workflows.sh
+./sync-workflows.sh --destination "/mnt/c/Users/YourName/.grok"
+./sync-workflows.sh --prune          # also remove obsolete destination .rhai files
+./scripts/verify.sh                  # safe local fixture/static tests, no live workflows
 ```
 
-From Windows PowerShell:
+From Windows PowerShell in this clone:
 
 ```powershell
-cd \\wsl$\Ubuntu-24.04\home\kinginyellow\projects\grok-workflows
 .\sync-workflows.ps1
 .\sync-workflows.ps1 -DryRun
+$env:GROK_HOME = 'C:\path\custom grok'
+.\sync-workflows.ps1
+.\sync-workflows.ps1 -Destination '\\wsl$\YourDistro\home\yourname\.grok'
 .\sync-workflows.ps1 -Prune
 ```
 
-`--prune` / `-Prune` is opt-in so a workflow created with `/create-workflow` is not deleted until you copy it into git.
+Additional homes are explicit and additive: repeat `--destination` in Bash or pass an array to `-Destination` in PowerShell. Each destination is a Grok home, not its `workflows` subdirectory. No Windows accounts or WSL distributions are discovered automatically. Run the installer appropriate to the shell; Bash destinations use mounted POSIX paths, PowerShell destinations use native/UNC paths.
+
+`--prune` / `-Prune` is opt-in so local-only workflows are preserved by default. Pruning affects only `workflows/*.rhai`; support checkpoints, locks, and other state are never pruned. Runtime `.mjs` helpers are copied together with workflows, excluding test files. Dry runs copy neither. The Bash installer and launcher are exercised in temporary directories; PowerShell behavior still needs a Windows smoke test.
 
 ## Daily update
 
-Pull `origin/main` (fast-forward only) and copy `*.rhai` into Grok config dirs. Never prunes, so local-only workflows stay put. Refuses to run if this clone is dirty, not on `main`, or cannot fast-forward.
+Pull `origin/main` (fast-forward only) and copy workflows and bundled helpers into the selected Grok home. Never prunes, so local-only workflows stay put. Refuses to run if this clone is dirty, not on `main`, or cannot fast-forward.
 
 ```bash
 cd ~/projects/grok-workflows
@@ -92,7 +105,7 @@ Do not `git pull` inside `~/.grok/workflows`. Grok writes files there.
 
 1. In a Grok session: `/create-workflow ...` (saves under `~/.grok/workflows/`).
 2. Copy the new `.rhai` into this git repo, commit, and push.
-3. Run `./sync-workflows.sh` or `.\sync-workflows.ps1` so every Grok home matches the repo.
+3. Run `./sync-workflows.sh` or `.\sync-workflows.ps1` for each explicitly selected Grok home.
 
 Launch with `/workflow <name>` or `/<name>` when the name is unique.
 
@@ -100,3 +113,15 @@ Launch with `/workflow <name>` or `/<name>` when the name is unique.
 
 - GitHub is the source of truth.
 - Project-scoped workflows can still live in a repo's `.grok/workflows/` if they should not follow you everywhere.
+
+## Recovery and execution lifecycle
+
+- A same-process resume replays committed host-call results with the original script and arguments. It does not retry a previously completed failed agent call, reload edited source into that call, or accept new arguments. Terminal `pause()` messages now request a new run where that is required.
+- `await_user()` approval gates can continue to a *new* collection call when the workflow explicitly includes one. The Graphite dirty-worktree gates do this. Do not replace a terminal pause with an approval gate and keep consuming failed output.
+- A process restart cannot resume its in-memory workflow. Helper checkpoints are separate from Grok replay. Before starting again, inspect the working tree, commits, remote PR state, and any pending cleanup: an external effect may have occurred before its result was recorded. A new run is not an automatic rollback or an exactly-once retry.
+- `implement-approved-plan` requires the implementer's agent ID before testing. If it is absent, the workflow stops without testing the parent checkout or applying the isolated worktree. Inspect that worktree before restarting.
+- `graphite-pr-review` reviews any branch read-only, but automatic repair/commit/submit now requires a verified unfrozen leaf (no descendants). Unknown topology, a frozen branch, or a non-leaf branch stops before repair; handle those manually. This is a deliberate scope restriction: [Graphite's command reference](https://graphite.com/docs/command-reference) documents recursive downstack freeze and upstack unfreeze, while modify automatically restacks descendants and has no documented no-restack option. Automatic freeze/unfreeze is forbidden. The scratch `freeze-cleanup.json` journal remains for recovery reporting; any pending legacy entries require manual recovery, and the final journal audit is read-only. Never blanket-unfreeze a stack.
+- `graphite-stack-merge` no longer depends on an absent Python helper. Dirty or unverified checkouts stop before diagnosis/preparation, with cleanliness rechecked immediately before live preparation. Its native read-only collector requires an unambiguous ancestry chain and the intended tip already checked out; explicit start_branch and range endpoints must match the verified chain. It fails closed on missing evidence or an explicit tip mismatch; select the correct tip yourself and start a new run. Merge dry-run results and actual queue membership must be verified before any preparation or landing. Diagnosis records the local tip SHA and the complete trunk-to-tip PR-number/head-OID set, including ancestors below from_pr. Enqueue rechecks every saved PR head and the local tip after approval and stops on any drift, missing entry, or changed membership. This is a point-in-time check, not an atomic expected-SHA condition: another actor can still race the final Graphite command.
+- `linear-cycle-deliver` creates missing PRs without `--update-only`, updates existing PRs with it, and verifies the actual PR number, URL, and remote SHA before adding a Linear link.
+
+Workflow agent budgets are cumulative (default 128 calls; explicit supported range 1–1024). Large parallel review panels can exhaust the budget before later verification. Set `--agent-budget` and `--effort` using the installed CLI's launch help; increasing a tool-resumed run's budget requires the corresponding resume option, not a new argument to the old script. Reports of incomplete verification or cleanup are blockers, not successful completion.

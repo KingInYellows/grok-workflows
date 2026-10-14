@@ -1309,7 +1309,7 @@ let scope_r = agent(scope_prompt, #{
 });
 if canned_result(scope_r) { finish_smoke(); }
 if scope_r == () || scope_r.success != true || scope_r.output == () {
-    pause("infra", "Scope agent failed. Resume to retry.");
+    pause("infra", "Scope agent failed. Start a new run to retry. Resume replays this failed result.");
 }
 
 let scope_out = scope_r.output;
@@ -1372,7 +1372,7 @@ let draft_r = agent(draft_prompt, #{
 });
 if canned_result(draft_r) { finish_smoke(); }
 if draft_r == () || draft_r.success != true || draft_r.output == () {
-    pause("infra", "Draft agent failed. Resume to retry.");
+    pause("infra", "Draft agent failed. Start a new run to retry. Resume replays this failed result.");
 }
 
 let draft_out = draft_r.output;
@@ -1392,7 +1392,7 @@ if norm.dropped > 0 { log("Dropped tracks: " + norm.dropped.to_string()); }
 if norm.file_drops > 0 { log("Dropped file paths: " + norm.file_drops.to_string()); }
 if norm.acceptance_clips > 0 { log("Clipped acceptance without splitting a word: " + norm.acceptance_clips.to_string()); }
 if norm.tracks.len() < 2 {
-    pause("verification", "Draft produced fewer than 2 tracks with real files. Single-area work belongs on implement-from-plan. Fix args.goal or sources and resume.");
+    pause("verification", "Draft produced fewer than 2 tracks with real files. Single-area work belongs on implement-from-plan. Fix args.goal or sources and start a new run. Resume replays the old draft.");
 }
 
 let unresolved = [];

@@ -411,7 +411,7 @@ let ingest_r = agent(ingest_prompt, #{
 });
 
 if ingest_r == () || !ingest_r.success || ingest_r.output == () {
-    pause("infra", "Ingest failed. Resume or re-run with clearer args.sources.");
+    pause("infra", "Ingest failed. Start a new run with clearer args.sources. Resume replays this failed result.");
 }
 
 let ingest = ingest_r.output;
@@ -468,7 +468,7 @@ while tracks.len() > 0 {
 tracks = sorted;
 
 if tracks.len() == 0 {
-    pause("verification", "Ingest found zero tracks. Plan must list multi-track work. Fix sources and resume.");
+    pause("verification", "Ingest found zero tracks. Plan must list multi-track work. Fix sources and start a new run. Resume replays the old ingest.");
 }
 
 let tracks_blob = "";
@@ -514,7 +514,7 @@ let plan_r = agent(plan_prompt, #{
 });
 
 if plan_r == () || !plan_r.success || plan_r.output == () {
-    pause("infra", "Plan agent failed. Resume to retry.");
+    pause("infra", "Plan agent failed and may have written a partial process file at " + plan_path + ". Inspect and reconcile it with the intended tracks before starting a new run; preserve user edits and do not blindly overwrite or delete it. Resume replays this failed result.");
 }
 
 let plan = plan_r.output;
