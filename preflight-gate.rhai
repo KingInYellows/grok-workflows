@@ -112,7 +112,7 @@ fn finding_usable(it) {
 
 fn is_block_severity(it) {
     let s = trimmed(it.severity);
-    s == "block" || s == ""
+    return s != "warn";
 }
 
 fn filter_root_findings(arr, root) {
@@ -214,7 +214,8 @@ if !evidence_complete(scope, MAX_EVIDENCE_CHARS) {
     pause("verification", "Complete working-tree evidence is missing or too large; gate cannot SHIP.");
 }
 root = scope.root;
-let encoded_since = json_encode(scope.baseline);
+since_ref = scope.baseline;
+let encoded_since = json_encode(since_ref);
 let encoded_root = json_encode(root);
 let root_note = " Inspect only the resolved checkout at " + encoded_root + ". All reported paths are relative to that checkout.";
 
@@ -340,7 +341,12 @@ while li < 3 {
                 evidence: trimmed(f.evidence),
                 severity: trimmed(f.severity),
             };
-            if item.severity != "block" && item.severity != "warn" { coverage_incomplete = true; }
+            if item.severity != "block" && item.severity != "warn" {
+                coverage_incomplete = true;
+                item.severity_reason = "Unknown scanner severity " + json_encode(item.severity) + "; treated as a candidate blocker pending verification.";
+                log(item.severity_reason);
+                item.severity = "block";
+            }
             if is_block_severity(f) {
                 if item.severity == "" { item.severity = "block"; }
                 blockers.push(item);
@@ -379,6 +385,7 @@ if to_verify.len() > 0 {
             issue: f.issue,
             evidence: f.evidence,
             severity: f.severity,
+            severity_reason: f.severity_reason,
         });
         let vp = "";
         vp += "Adversarially verify this pre-commit BLOCK finding. You are a cold subagent. Do not trust the scanner.";
@@ -517,6 +524,7 @@ if confirmed.len() == 0 {
         md += "`: ";
         md += it.issue;
         md += "\n";
+        if it.severity_reason != () { md += "  - Severity handling: " + it.severity_reason + "\n"; }
         md += "  - Scanner evidence: ";
         md += it.evidence;
         md += "\n";

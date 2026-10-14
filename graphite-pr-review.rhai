@@ -80,6 +80,14 @@ fn triage_is_complete(agent_ok, reported_complete, has_reason, has_evidence, val
     return agent_ok && reported_complete && has_reason && has_evidence && valid_verdict;
 }
 
+fn tests_were_verified(passed, count, has_evidence) {
+    return passed && count > 0 && has_evidence;
+}
+
+fn plan_verdict_complete(matches, valid) {
+    return matches == 1 && valid;
+}
+
 fn bool_text(v) {
     if v { "true" } else { "false" }
 }
@@ -430,7 +438,7 @@ fn repair_prompt(packet_json, submit_follows, edit_cap, repo) {
     p += "The pull request branch is already checked out. Do not checkout or switch branches.\n";
     p += "You must not submit, reply, resolve, push, rebase, or git commit --amend.\n";
     p += "Edit only files named on the repairs. At most " + edit_cap.to_string() + " files. If a change is already present in HEAD and git status --porcelain is empty, do not edit. Set already_present=true and clean=true.\n";
-    p += "Run only test_command values from the repairs. Skip a command whose value is none. Do not invent a suite. If every command is none, set tests_passed=true and note that no test was planned. If a command fails, set tests_passed=false and do not commit.\n";
+    p += "Run only test_command values from the repairs. Skip a command whose value is none. Do not invent a suite. If every command is none, set tests_passed=false, tests_executed=0, and test_evidence to empty; do not commit or claim verification. Submission remains blocked until a concrete planned check can run. Record tests_executed as the count of planned commands actually run and test_evidence as their commands plus exit codes. Set tests_passed=true only if at least one planned command ran and all passed. If a command fails, set tests_passed=false and do not commit.\n";
     p += "Before a commit, freeze direct children. Run gt --no-interactive children. Freezing from the parent often freezes the current branch. If that happens, unfreeze the current branch, check out each direct child, freeze it there, then return to this branch.\n";
     p += "Stage named paths only. Commit with gt --no-interactive modify --commit -m \"fix: ...\" when this branch needs a new commit. When the branch already has this PR commit and you are folding the fix in, use gt commit amend --no-edit --no-interactive.\n";
     p += "If tests fail after you froze children, unfreeze those children before you return.\n";
@@ -614,13 +622,15 @@ let plan_verdict_schema = #{
 
 let repair_schema = #{
     "type": "object",
-    "required": ["ok", "committed", "already_present", "clean", "tests_passed", "sha", "summary", "error"],
+    "required": ["ok", "committed", "already_present", "clean", "tests_passed", "tests_executed", "test_evidence", "sha", "summary", "error"],
     "properties": #{
         "ok": #{ "type": "boolean" },
         "committed": #{ "type": "boolean" },
         "already_present": #{ "type": "boolean" },
         "clean": #{ "type": "boolean" },
         "tests_passed": #{ "type": "boolean" },
+        "tests_executed": #{ "type": "integer", "minimum": 0 },
+        "test_evidence": #{ "type": "string" },
         "sha": #{ "type": "string" },
         "summary": #{ "type": "string" },
         "error": #{ "type": "string" },
@@ -1249,16 +1259,24 @@ if pool_count > 0 {
         for row in candidates {
             let accepted = false;
             let rejected = false;
+            let matched = 0;
+            let verdict_valid = true;
             for verdict in verdicts {
                 if type_of(verdict) != "map" { continue; }
                 if map_str(verdict, "id") != row.id { continue; }
+                matched += 1;
+                if type_of(map_get(verdict, "accept")) != "bool" || map_str(verdict, "evidence") == "" { verdict_valid = false; }
                 if map_bool(verdict, "accept", false) && map_str(verdict, "evidence") != "" {
                     accepted = true;
                 } else {
                     rejected = true;
                 }
             }
-            if accepted && !rejected {
+            if !plan_verdict_complete(matched, verdict_valid) {
+                coverage_complete = false;
+                coverage_notes.push("Plan verification missing, duplicated or without evidence for " + row.id);
+            }
+            if accepted && !rejected && matched == 1 && verdict_valid {
                 repairs.push(row);
             } else {
                 dropped_repairs += 1;
@@ -1326,7 +1344,7 @@ if do_apply && repairs.len() > 0 && coverage_complete {
         repair_committed = map_bool(repair_out, "committed", false);
         repair_sha = map_str(repair_out, "sha");
         repair_summary = map_str(repair_out, "summary");
-        let tests_passed = map_bool(repair_out, "tests_passed", false);
+        let tests_passed = tests_were_verified(map_bool(repair_out, "tests_passed", false), map_int(repair_out, "tests_executed"), map_str(repair_out, "test_evidence") != "");
         let already_present = map_bool(repair_out, "already_present", false);
         let tree_clean = map_bool(repair_out, "clean", false);
         if repair_can_submit(map_bool(repair_out, "ok", false), repair_committed, already_present, tree_clean, tests_passed, repair_sha != "") {

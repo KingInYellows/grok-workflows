@@ -31,15 +31,15 @@ function compile(source, names) {
   });
   for (const name of names) {
     const rhai = extract(source, name);
-    assert(!/\b(for|while|try|catch)\b/.test(rhai), 'guard translator supports straight-line conditionals only');
+    assert(!/\b(while|try|catch)\b/.test(rhai), 'guard translator supports conditionals and simple array iteration only');
     let js = rhai.replace(/^fn /, 'function ').replace(/== \(\)/g, '== null').replace(/!= \(\)/g, '!= null')
-      .replace(/\.len\(\)/g, '.length').replace(/#\{/g, '{').replace(/\bif ([^\n{]+) \{/g, 'if ($1) {');
+      .replace(/for (\w+) in (\w+) \{/g, 'for (const $1 of $2) {').replace(/\.len\(\)/g, '.length').replace(/#\{/g, '{').replace(/\bif ([^\n{]+) \{/g, 'if ($1) {');
     vm.runInContext(js, context);
   }
   return context;
 }
-const guard = compile(gate, ['verdict_complete', 'gate_blocked', 'lane_from', 'evidence_complete']);
-const bguard = compile(branch, ['review_complete', 'verdict_complete']);
+const guard = compile(gate, ['verdict_complete', 'gate_blocked', 'lane_from', 'evidence_complete', 'is_block_severity']);
+const bguard = compile(branch, ['review_complete', 'verdict_complete', 'same_file_set']);
 const verdict = (real, extra = {}) => ({success: true, output: {coverage_complete: true, real, reason: 'Inspected code', evidence: 'actual source', ...extra}});
 const lane = (findings = []) => ({success: true, output: {coverage_complete: true, findings, summary: 'Inspected all changes'}});
 
@@ -188,4 +188,48 @@ test('git collector retains staged unsafe change canceled by an unstaged reversi
     assert.match(gate,/A staged defect remains a blocker even if an unstaged edit removes it/);
     assert.doesNotMatch(gate,/confirmed a clean tree with git status\/diff/);
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+});
+
+test('actual branch manifest guard requires bidirectional agreement with diff paths', () => {
+  assert.equal(bguard.same_file_set(['a.txt','b.txt'],['b.txt','a.txt']),true);
+  assert.equal(bguard.same_file_set([],[]),true);
+  for (const [manifest,diffPaths] of [
+    [['a.txt'],['a.txt','b.txt']], // Collector omitted a changed file.
+    [['a.txt','b.txt'],['a.txt']], // Collector claims a file without diff evidence.
+    [[],['a.txt']], [['a.txt'],[]],
+    [['a.txt','a.txt'],['a.txt','b.txt']],
+    [['a.txt','b.txt'],['a.txt','a.txt']],
+    [[''],['']], [[123],[123]], [null,[]],
+  ]) assert.equal(bguard.same_file_set(manifest,diffPaths),false,JSON.stringify([manifest,diffPaths]));
+  assert.match(branch,/if !same_file_set\(parsed, parse_diff_files\(diff\)\) \{\s*pause\("verification"/);
+});
+
+test('actual preflight baseline assignment pins subsequent reports and verification', () => {
+  const assignment = gate.match(/root = scope.root;\s*since_ref = scope.baseline;\s*let encoded_since = json_encode\(since_ref\);/);
+  assert(assignment,'resolved baseline must replace caller ref');
+  const ctx = vm.createContext({root:'.', since_ref:'moving-branch',scope:{root:'/nested/repo',baseline:'a'.repeat(40)},json_encode:JSON.stringify});
+  const result = vm.runInContext(assignment[0]+'\n({since_ref,encoded_since})',ctx);
+  assert.equal(result.since_ref,'a'.repeat(40));
+  assert.equal(result.encoded_since,JSON.stringify('a'.repeat(40)));
+  assert.match(gate,/md \+= since_ref;/);
+  assert.match(gate,/since: since_ref,/);
+});
+
+test('actual lane routing verifies unknown severity as a blocker with an explicit reason', () => {
+  const start = gate.indexOf('        for f in kept {');
+  const end = gate.indexOf('        log("Lane "',start);
+  assert(start > 0 && end > start);
+  const js = gate.slice(start,end).replace(/for (\w+) in (\w+) \{/g,'for (const $1 of $2) {')
+    .replace(/#\{/g,'{').replace(/\bif ([^\n{]+) \{/g,'if ($1) {');
+  const kept = ['block','warn','critical','',null].map(severity=>({file:'a.txt',issue:'issue',evidence:'quote',severity}));
+  const ctx = vm.createContext({kept,name:'diff',coverage_incomplete:false,blockers:[],warnings:[],trimmed:x=>typeof x==='string'?x.trim():'',json_encode:JSON.stringify,log:()=>{},is_block_severity:guard.is_block_severity});
+  const result = vm.runInContext(js+'\n({blockers,warnings,coverage_incomplete})',ctx);
+  assert.equal(result.blockers.length,4);
+  assert.equal(result.warnings.length,1);
+  assert.equal(result.warnings[0].severity,'warn');
+  assert.equal(result.coverage_incomplete,true);
+  for (const item of result.blockers.slice(1)) {
+    assert.equal(item.severity,'block');
+    assert.match(item.severity_reason,/Unknown scanner severity.*candidate blocker pending verification/);
+  }
 });

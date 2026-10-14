@@ -163,6 +163,22 @@ fn skip_file(path) {
     false
 }
 
+// Require exact bidirectional agreement, including duplicate/malformed-path rejection.
+fn same_file_set(listed, parsed) {
+    if type_of(listed) != "array" || type_of(parsed) != "array" { return false; }
+    if listed.len() != parsed.len() { return false; }
+    let seen = #{};
+    for path in listed {
+        if type_of(path) != "string" || path == "" || seen[path] == true { return false; }
+        seen[path] = true;
+    }
+    for path in parsed {
+        if type_of(path) != "string" || seen[path] != true { return false; }
+        seen[path] = false;
+    }
+    return true;
+}
+
 fn parse_diff_files(diff) {
     let files = [];
     let seen = #{};
@@ -317,7 +333,9 @@ let diff = scope.diff;
 if type_of(diff) != "string" || type_of(scope.sources) != "map" || diff.len() + json_encode(scope.sources).len() > MAX_EVIDENCE_CHARS {
     pause("verification", "Pinned diff/source package is missing or exceeds the bounded review limit.");
 }
-if parsed.len() == 0 && trimmed(diff) != "" { pause("verification", "Collector file list conflicts with nonempty diff."); }
+if !same_file_set(parsed, parse_diff_files(diff)) {
+    pause("verification", "Collector file list and diff headers disagree; review coverage is incomplete.");
+}
 let diff_ok = true;
 
 let files = [];
