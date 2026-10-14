@@ -192,3 +192,36 @@ test('explicit landing modes cannot bypass fresh post-sync readiness', () => {
   assert.equal(pickAction({ mode: 'auto' }, waiting), 'merge-when-ready');
   assert.equal(pickAction({ mode: 'merge' }, { ...ready, already_queued: true }), 'wait-queue');
 });
+
+test('landing synchronization excludes upstack and both native MQ scans are bounded', () => {
+  const merge = read('graphite-stack-merge.rhai');
+  const syncs = merge.match(/gt get <tip>[^`]+/g);
+  assert.equal(syncs.length, 2);
+  for (const command of syncs) assert.match(command, /--downstack --force --no-restack --no-interactive/);
+  const scans = merge.match(/gh pr list --state open --search 'head:gtmq'[^.\n]+/g);
+  assert.equal(scans.length, 2);
+  for (const command of scans) assert.match(command, /--limit 100 --json/);
+  assert.equal((merge.match(/The MQ search is bounded at 100 raw rows/g) || []).length, 2);
+  assert.equal((merge.match(/if !queue_scan_verified\(o\)/g) || []).length, 2);
+  for (const name of ['discover_schema', 'diagnose_schema']) {
+    const required = merge.split(`let ${name} =`)[1].match(/"required": \[([^\n]+)\]/)[1];
+    assert.ok(required.includes('"mq_scan_complete"'));
+    assert.ok(required.includes('"mq_scan_count"'));
+  }
+});
+
+test('queue completeness guard rejects cap, missing evidence, malformed counts and failed scans', () => {
+  const merge = read('graphite-stack-merge.rhai');
+  const condition = merge.match(/return (map_bool\(output, "mq_scan_complete"[^\n]+);/)[1];
+  const verify = new Function('output', 'count', 'map_bool', 'type_of', `return ${condition};`);
+  const mapBool = (object, key, fallback) => typeof object?.[key] === 'boolean' ? object[key] : fallback;
+  const typeOf = value => Number.isInteger(value) ? 'i64' : typeof value;
+  const check = output => verify(output, output.mq_scan_count, mapBool, typeOf);
+  for (const count of [0, 31, 99]) assert.equal(check({ mq_scan_complete: true, mq_scan_count: count }), true);
+  for (const count of [100, 101, -1, 1.5, '0', null, undefined]) {
+    assert.equal(check({ mq_scan_complete: true, mq_scan_count: count }), false);
+  }
+  assert.equal(check({ mq_scan_complete: false, mq_scan_count: 0 }), false);
+  assert.equal(check({ mq_scan_count: 0 }), false);
+  assert.equal(check({}), false);
+});

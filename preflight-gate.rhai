@@ -340,6 +340,7 @@ while li < 3 {
                 issue: trimmed(f.issue),
                 evidence: trimmed(f.evidence),
                 severity: trimmed(f.severity),
+                severity_reason: "",
             };
             if item.severity != "block" && item.severity != "warn" {
                 coverage_incomplete = true;
@@ -524,7 +525,7 @@ if confirmed.len() == 0 {
         md += "`: ";
         md += it.issue;
         md += "\n";
-        if it.severity_reason != () { md += "  - Severity handling: " + it.severity_reason + "\n"; }
+        if trimmed(it.severity_reason) != "" { md += "  - Severity handling: " + it.severity_reason + "\n"; }
         md += "  - Scanner evidence: ";
         md += it.evidence;
         md += "\n";
