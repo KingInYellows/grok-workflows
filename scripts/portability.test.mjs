@@ -136,3 +136,59 @@ test('repair topology gate rejects descendants, frozen state, and missing eviden
   assert.match(pr, /Any pending entry or nonempty frozen_children list is a blocker requiring manual recovery/);
   assert.doesNotMatch(pr, /attempt to unfreeze|unfreeze that exact branch|Before freezing each/);
 });
+
+test('collector allows required read-only Graphite topology inspection', () => {
+  const collector = read('graphite-pr-review.rhai').split('fn collect_prompt(')[1].split('fn ')[0];
+  assert.doesNotMatch(collector, /Never gt log\./);
+  assert.match(collector, /Read-only gt log and gt info are allowed/);
+  assert.match(collector, /inspection fails, mark freeze_state_verified=false/);
+});
+
+test('native merge diagnosis requires a bounded action and explicit evidence mapping', () => {
+  const merge = read('graphite-stack-merge.rhai');
+  const schema = merge.split('let diagnose_schema =')[1].split('let prepare_schema =')[0];
+  assert.match(schema, /"required": \[[^\n]*"recommended_action"/);
+  assert.match(schema, /"enum": \["merge", "merge-when-ready", "wait-queue", "stop"\]/);
+  for (const mapping of ['already_queued=true -> wait-queue', 'blocked=true or ok=false -> stop', 'ready=true -> merge', 'waiting_ci=true with no other blocker -> merge-when-ready']) {
+    assert.ok(merge.includes(mapping));
+  }
+  assert.match(merge, /diagnose omitted or returned an invalid recommended_action/);
+});
+
+test('successful live dry-run still schedules synchronization; dry-run and queued work do not', () => {
+  const merge = read('graphite-stack-merge.rhai');
+  const condition = merge.match(/if (!cfg.dry_run && !diag.already_queued && !diag.blocked) \{\s*diag.needs_get = true;/)[1];
+  const mustSync = new Function('cfg', 'diag', `return ${condition};`);
+  const ready = { already_queued: false, blocked: false, ready: true, needs_get: false };
+  assert.equal(mustSync({ dry_run: false }, ready), true);
+  assert.equal(mustSync({ dry_run: true }, ready), false);
+  assert.equal(mustSync({ dry_run: false }, { ...ready, already_queued: true }), false);
+  assert.equal(mustSync({ dry_run: false }, { ...ready, blocked: true }), false);
+  assert.ok(merge.indexOf('diag.needs_get = true;') < merge.indexOf('if needs_prepare(diag) {'));
+  assert.match(merge, /Set did_get=true only after the command succeeds/);
+  assert.match(merge, /if !diag2.ok \{\s*pause\("infra", "Diagnosis after preparation failed/);
+  assert.match(merge, /!map_bool\(prep_res.output, "did_get", false\)/);
+  assert.ok(merge.indexOf('Mandatory pre-land synchronization was not verified') < merge.indexOf('let enq_res = agent('));
+});
+
+test('explicit landing modes cannot bypass fresh post-sync readiness', () => {
+  const merge = read('graphite-stack-merge.rhai');
+  const source = merge.split('fn pick_action(cfg_map, diag) {')[1].split('\nfn needs_prepare')[0];
+  const body = source.slice(0, source.lastIndexOf('}')).replace(/if ([^{\n]+) \{/g, 'if ($1) {');
+  const pickAction = new Function('cfg_map', 'diag', body);
+  const ready = { ok: true, already_queued: false, blocked: false, ready: true, waiting_ci: false, needs_get: false, needs_restack: false, needs_unfreeze: false, needs_submit: false, verdict: 'ready', recommended_action: 'merge' };
+  for (const mode of ['auto', 'merge', 'merge-when-ready']) {
+    assert.equal(pickAction({ mode }, { ...ready, ready: false, needs_restack: true, recommended_action: 'stop' }), 'stop');
+    assert.equal(pickAction({ mode }, { ...ready, recommended_action: 'stop' }), 'stop');
+    assert.equal(pickAction({ mode }, { ...ready, ok: false }), 'stop');
+    for (const flag of ['needs_get', 'needs_restack', 'needs_unfreeze', 'needs_submit']) {
+      assert.equal(pickAction({ mode }, { ...ready, [flag]: true }), 'stop');
+    }
+  }
+  const waiting = { ...ready, ready: false, waiting_ci: true, recommended_action: 'merge-when-ready' };
+  assert.equal(pickAction({ mode: 'merge' }, waiting), 'stop');
+  assert.equal(pickAction({ mode: 'merge-when-ready' }, waiting), 'merge-when-ready');
+  assert.equal(pickAction({ mode: 'auto' }, ready), 'merge');
+  assert.equal(pickAction({ mode: 'auto' }, waiting), 'merge-when-ready');
+  assert.equal(pickAction({ mode: 'merge' }, { ...ready, already_queued: true }), 'wait-queue');
+});

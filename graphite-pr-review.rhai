@@ -285,6 +285,24 @@ fn ids_all_in(ids, allowed) {
     true
 }
 
+// Check the final accepted/capped plan, not merely each candidate's membership.
+// A plan-skeptic rejection rejects that repair proposal; it does not refute an
+// already-confirmed source finding. Triage false positives never enter kept_ids.
+fn missing_repair_sources(kept_ids, repairs) {
+    let covered = [];
+    for repair in repairs {
+        for item in as_array(map_get(repair, "source_ids")) {
+            let id = trimmed(item);
+            if id != "" && !list_has(covered, id) { covered.push(id); }
+        }
+    }
+    let missing = [];
+    for id in kept_ids {
+        if !list_has(covered, id) && !list_has(missing, id) { missing.push(id); }
+    }
+    return missing;
+}
+
 fn agent_map(r) {
     if r == () || r.success != true || r.output == () { return (); }
     if type_of(r.output) != "map" { return (); }
@@ -316,7 +334,7 @@ fn collect_prompt(pr_number, repo) {
     let p = "You collect one Graphite pull request for review. Use the shell. Do not edit, commit, submit, comment, resolve, or stash.\n";
     p += guardrails_text(repo);
     p += "Checkout exception for this collector only: land on the pull request branch before you diff.\n";
-    p += "Never gt checkout. Never gt parent. Never gt log. Never gt branch info. Those fail on an untracked branch.\n";
+    p += "Never gt checkout, gt parent, or the obsolete gt branch info command. Read-only gt log and gt info are allowed only for the topology/frozen-state inspection below. If the branch is untracked or inspection fails, mark freeze_state_verified=false; do not track it or mutate Graphite state.\n";
     p += "Never git fetch origin pr/<N>. Never git checkout pr/<N>. GitHub does not publish that ref.\n";
     p += "Support CLI: node " + support_cli() + "\n";
     p += "If that file is missing, do not invent a second client. Use git and gh.\n";
@@ -1332,6 +1350,15 @@ if repairs.len() > 0 {
 }
 if dropped_repairs > 0 {
     log("dropped " + dropped_repairs.to_string() + " repairs");
+}
+
+// Run after all planner filtering, plan verification, and edit-file caps.
+let uncovered_sources = missing_repair_sources(kept_ids, repairs);
+if uncovered_sources.len() > 0 {
+    coverage_complete = false;
+    for id in uncovered_sources {
+        coverage_notes.push("Confirmed source has no accepted repair after planning/caps: " + id);
+    }
 }
 
 phase("Repair");

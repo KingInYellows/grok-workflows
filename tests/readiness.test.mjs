@@ -97,3 +97,52 @@ test('repair cleanliness preserves the collector allowed-untracked-note policy',
   assert.match(graphite, /Any other modified, staged, deleted or untracked path means clean=false/);
   assert.match(graphite, /Never delete, stage or stash ignored notes/);
 });
+
+// Execute the actual bounded-loop Rhai helper with mock host-value adapters.
+// This subset translation does not claim full Rhai compilation/integration.
+function missingRepairSourcesFunction() {
+  const start = graphite.indexOf('fn missing_repair_sources(');
+  assert.ok(start > 0);
+  let depth=0, end=-1;
+  for (let i=graphite.indexOf('{',start); i<graphite.length; i++) {
+    if (graphite[i] === '{') depth++;
+    if (graphite[i] === '}' && --depth === 0) { end=i+1; break; }
+  }
+  assert.ok(end > start);
+  const js = graphite.slice(start,end).replace(/^fn /,'function ')
+    .replace(/for (\w+) in ([^\n{]+) \{/g,'for (const $1 of $2) {')
+    .replace(/\bif ([^\n{]+) \{/g,'if ($1) {');
+  return Function('as_array','map_get','trimmed','list_has',js+'; return missing_repair_sources;')(
+    v=>Array.isArray(v)?v:[], (v,k)=>v?.[k], v=>typeof v==='string'?v.trim():'', (vs,v)=>vs.includes(v));
+}
+const missingRepairSources = missingRepairSourcesFunction();
+test('final accepted repair union must cover every kept source, including planner omissions', () => {
+  const repair = (...source_ids) => ({source_ids});
+  assert.deepEqual(missingRepairSources(['a','b'],[repair('a')]),['b']);
+  assert.deepEqual(missingRepairSources(['a','b'],[]),['a','b']);
+  assert.deepEqual(missingRepairSources(['a','b'],[repair('a','b')]),[]);
+  assert.deepEqual(missingRepairSources(['a','b'],[repair('b'),repair('a'),repair('a')]),[]);
+  assert.deepEqual(missingRepairSources(['a','b'],[repair('a','unknown')]),['b']);
+  // Removing an otherwise valid repair because of a count/file cap or plan
+  // rejection cannot silently turn an unresolved confirmed source into success.
+  const beforeCap=[repair('a'),repair('b'),repair('c')];
+  assert.deepEqual(missingRepairSources(['a','b','c'],beforeCap.slice(0,2)),['c']);
+  assert.deepEqual(missingRepairSources(['a','b','c'],beforeCap.filter((_,i)=>i!==1)),['b']);
+  // Genuine evidence-backed triage false positives are excluded from kept_ids;
+  // they need no repair and do not block a complete plan for actual defects.
+  assert.deepEqual(missingRepairSources(['real'],[repair('real')]),[]);
+  assert.deepEqual(missingRepairSources([],[]),[]);
+});
+test('coverage guard runs after caps and before either repair or submit side effects', () => {
+  const capped=graphite.indexOf('repairs = capped;');
+  const guard=graphite.indexOf('let uncovered_sources = missing_repair_sources(kept_ids, repairs);');
+  const apply=graphite.indexOf('if do_apply && repairs.len() > 0 && coverage_complete');
+  const submit=graphite.indexOf('if do_submit && repair_ready && coverage_complete');
+  assert.ok(capped > 0 && guard > capped && apply > guard && submit > guard);
+  assert.match(graphite,/if uncovered_sources.len\(\) > 0 \{\s*coverage_complete = false;/);
+  assert.match(graphite,/Confirmed source has no accepted repair after planning\/caps:/);
+  const fpStart=graphite.indexOf('} else if class_name == "false_positive"');
+  const fpEnd=graphite.indexOf('} else if class_name == "human_blocker"',fpStart);
+  assert.ok(fpStart > 0 && fpEnd > fpStart);
+  assert.doesNotMatch(graphite.slice(fpStart,fpEnd),/kept_ids.push/);
+});
