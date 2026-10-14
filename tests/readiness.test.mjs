@@ -12,7 +12,7 @@ const multi = source('multi-track-ship');
 function predicate(text, name) {
   const m = text.match(new RegExp(`fn ${name}\\(([^)]*)\\) \\{\\s*return ([^;]+);\\s*\\}`));
   assert.ok(m, `${name} must remain a pure explicit-return predicate`);
-  assert.match(m[2], /^[a-z_ ()&|]+$/i, 'only boolean expression syntax supported');
+  assert.match(m[2], /^[a-z0-9_ ()&|=!<>]+$/i, 'only boolean expression syntax supported');
   return Function(...m[1].split(',').map(x => x.trim()), `return ${m[2]};`);
 }
 const canSubmit = predicate(graphite, 'repair_can_submit');
@@ -79,4 +79,21 @@ test('every triage slot requires a resolved evidence-backed verdict, including r
   assert.match(graphite, /if !triage_is_complete\(out != \(\), map_bool\(out, "coverage_complete", false\), map_str\(out, "reason"\) != "", map_str\(out, "evidence"\) != "", valid_verdict\) \{\s*coverage_complete = false;/);
   assert.match(graphite, /valid_verdict = type_of\(map_get\(out, "real"\)\) == "bool";/);
   assert.match(graphite, /valid_verdict = list_has\(\["actionable_valid", "already_fixed", "duplicate", "informational", "false_positive", "human_blocker"\], map_str\(out, "class"\)\);/);
+});
+test('skipped tests and incomplete plan verdicts cannot authorize submission', () => {
+  const tested = predicate(graphite, 'tests_were_verified');
+  for (const passed of [false,true]) for (const count of [0,1,2]) for (const evidence of [false,true]) {
+    assert.equal(tested(passed,count,evidence), passed && count > 0 && evidence);
+  }
+  const planned = predicate(graphite, 'plan_verdict_complete');
+  for (const matches of [0,1,2]) for (const valid of [false,true]) assert.equal(planned(matches,valid), matches === 1 && valid);
+  assert.match(graphite, /let tests_passed = tests_were_verified\(map_bool\(repair_out, "tests_passed", false\), map_int\(repair_out, "tests_executed"\), map_str\(repair_out, "test_evidence"\) != ""\);/);
+  assert.doesNotMatch(graphite, /every command is none, set tests_passed=true/);
+  assert.match(graphite, /if !plan_verdict_complete\(matched, verdict_valid\) \{\s*coverage_complete = false;/);
+  assert.match(graphite, /if accepted && !rejected && matched == 1 && verdict_valid \{/);
+});
+test('repair cleanliness preserves the collector allowed-untracked-note policy', () => {
+  assert.match(graphite, /Use the same normalized cleanliness rule as collection: ignore ONLY untracked paths under plans\/, \.grok\/, docs\/goals\/, docs\/brainstorms\/, and docs\/solutions\//);
+  assert.match(graphite, /Any other modified, staged, deleted or untracked path means clean=false/);
+  assert.match(graphite, /Never delete, stage or stash ignored notes/);
 });

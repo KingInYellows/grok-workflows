@@ -81,15 +81,14 @@ test('portable helper contract is consistent; no cross-account or hardcoded WSL 
   assert.match(read('graphite-stack-merge.rhai'), /from_pr is not in the verified ancestry chain/);
 });
 
-test('recovery contracts retain owned-freeze handoff, missing-ID guard and explicit fresh-run guidance', () => {
+test('recovery contracts retain manual journal audit, missing-ID guard and explicit fresh-run guidance', () => {
   const pr = read('graphite-pr-review.rhai');
   assert.match(pr, /"required": \[[^\n]*"frozen_children"/);
   assert.match(pr, /frozen_children: frozen_children,\s*cleanup_journal: cleanup_journal/);
-  assert.match(pr, /originally_frozen=false/);
   assert.match(pr, /Skip entries with restored=true: ownership ended/);
-  assert.match(pr, /originally_frozen=false and restored=false/);
-  assert.match(pr, /label: "restore-owned-freezes"/);
-  assert.ok(pr.indexOf('label: "restore-owned-freezes"') > pr.indexOf('let submitted = agent('));
+  assert.match(pr, /never run gt freeze or gt unfreeze/);
+  assert.match(pr, /label: "audit-freeze-journal"/);
+  assert.ok(pr.indexOf('label: "audit-freeze-journal"') > pr.indexOf('let submitted = agent('));
   assert.match(pr, /missing, unreadable, or inconsistent journal is a blocker/);
   const isolated = read('implement-approved-plan.rhai');
   assert.ok(isolated.indexOf('Implementation returned no resumable agent ID') < isolated.indexOf('let test_r = agent('));
@@ -100,4 +99,40 @@ test('recovery contracts retain owned-freeze handoff, missing-ID guard and expli
   const cycle = read('linear-cycle-deliver.rhai');
   assert.match(cycle, /When no PR exists, run gt --no-interactive submit --no-edit \(without --update-only\)/);
   assert.match(cycle, /If verification fails, return submitted=false and do not link Linear/);
+});
+
+
+test('dirty or unknown merge checkout stops before diagnosis and any live preparation', () => {
+  const merge = read('graphite-stack-merge.rhai');
+  const guard = merge.indexOf('if disc.dirty {');
+  assert.ok(guard > merge.indexOf('let disc = apply_discovered('));
+  assert.ok(guard < merge.indexOf('phase("Diagnose");'));
+  assert.match(merge, /let dirty = true;/);
+  assert.match(merge, /dirty = map_bool\(o, "dirty", true\);/);
+  assert.match(merge, /Before ANY preparation command, re-run git status --porcelain/);
+  assert.match(merge, /sole exception is aborting a conflicting Graphite operation that this workflow just started/);
+  assert.match(merge, /Never abort an unrelated or pre-existing operation/);
+  for (const dirty of [true, undefined, null]) {
+    const verifiedDirty = typeof dirty === 'boolean' ? dirty : true;
+    const calls = verifiedDirty ? [] : ['diagnose', 'prepare'];
+    assert.deepEqual(calls, []);
+  }
+});
+
+test('repair topology gate rejects descendants, frozen state, and missing evidence; accepts only unfrozen leaf', () => {
+  const pr = read('graphite-pr-review.rhai');
+  const condition = pr.match(/if (!map_bool\(collect_out, "freeze_state_verified"[^\n]+) \{/)[1];
+  const blocked = new Function('collect_out', 'map_bool', `return ${condition};`);
+  const mapBool = (object, key, fallback) => typeof object?.[key] === 'boolean' ? object[key] : fallback;
+  const leaf = { freeze_state_verified: true, is_leaf: true, branch_frozen: false };
+  assert.equal(blocked(leaf, mapBool), false);
+  for (const state of [{}, { ...leaf, is_leaf: false }, { ...leaf, branch_frozen: true }, { ...leaf, freeze_state_verified: false }]) {
+    assert.equal(blocked(state, mapBool), true);
+  }
+  assert.ok(pr.indexOf(condition) < pr.indexOf('let repaired = agent('));
+  assert.match(pr, /Before any edit or commit, recheck the selected branch is an unfrozen leaf/);
+  assert.match(pr, /Automatic freeze and unfreeze are forbidden/);
+  assert.match(pr, /label: "audit-freeze-journal", capability_mode: "read-only"/);
+  assert.match(pr, /Any pending entry or nonempty frozen_children list is a blocker requiring manual recovery/);
+  assert.doesNotMatch(pr, /attempt to unfreeze|unfreeze that exact branch|Before freezing each/);
 });

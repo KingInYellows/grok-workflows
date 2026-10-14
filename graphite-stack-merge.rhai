@@ -264,6 +264,7 @@ fn rules_text() {
     t += "- NEVER `git push --force`, `git rebase`, or `git commit --amend`. Use `gt` only.\n";
     t += "- Always pass `--no-interactive` to gt. Submit with `--no-edit --no-ai`.\n";
     t += "- `gt merge` merges trunk through the CURRENT branch. Checkout the TIP (to_pr / top of the range) first.\n";
+    t += "- Immediately before any mutating command, including after user approval, re-run git status --porcelain and require a successful empty result. Dirty or uncertain state blocks mutation; never stash or discard changes automatically. The sole exception is aborting a conflicting Graphite operation that this workflow just started, after verifying that operation is still in progress. Never abort an unrelated or pre-existing operation.\n";
     t += "- Before a live land: `gt get <tip> --force --no-restack --no-interactive` so local matches submitted remotes. On dry-run, do not `--force`.\n";
     t += "- `gt merge --dry-run` saying branches 'have not been submitted' often means the parent SHA is stale, not that GitHub PRs are missing.\n";
     t += "- Frozen branches skip restack. Unfreeze descendants of a stale parent, restack, then submit. Do not unfreeze a parent that is already the intended base.\n";
@@ -304,7 +305,7 @@ fn diagnose_prompt(cfg_map, disc_json) {
 fn prepare_prompt(cfg_map, disc_json, diag_json) {
     let p = "You are the prepare worker for graphite-stack-merge. Use tools. Do not answer from memory.\n";
     p += rules_text();
-    p += "Discovery said the stack needs local repair before Graphite will merge it. Execute ONLY what diagnose flagged.\n";
+    p += "Before ANY preparation command, re-run git status --porcelain and require a successful empty result. If dirty or uncertain, stop without gt get, unfreeze, restack, or submit; never stash or discard changes automatically. Discovery said the stack needs local repair before Graphite will merge it. Execute ONLY what diagnose flagged.\n";
     p += "Order:\n";
     p += "1. If already_queued or MQ drafts exist: do nothing. ok=true, summary='skipped: already in merge queue'.\n";
     p += "2. If needs_get: `gt get <tip> --force --no-restack --no-interactive`.\n";
@@ -342,7 +343,7 @@ fn apply_discovered(res) {
     let trunk = "";
     let tip_branch = "";
     let tip_pr = 0;
-    let dirty = false;
+    let dirty = true;
     let already_queued = false;
     let prs = [];
     if res != () && res.success && res.output != () && type_of(res.output) == "map" {
@@ -353,7 +354,7 @@ fn apply_discovered(res) {
         trunk = map_str(o, "trunk");
         tip_branch = map_str(o, "tip_branch");
         tip_pr = map_int(o, "tip_pr");
-        dirty = map_bool(o, "dirty", false);
+        dirty = map_bool(o, "dirty", true);
         already_queued = map_bool(o, "already_queued", false);
         if o.prs != () && type_of(o.prs) == "array" {
             for raw in o.prs {
@@ -524,6 +525,9 @@ let discovered_res = agent(discover_prompt(cfg, cfg_json), #{
 let disc = apply_discovered(discovered_res);
 if !disc.ok {
     pause("infra", "Discover failed: " + disc.error);
+}
+if disc.dirty {
+    pause("verification", "Working tree is dirty or cleanliness was not verified. No diagnosis or preparation was attempted. Preserve your changes, then start a new run from a clean checkout.");
 }
 if cfg.start_branch != "" && disc.tip_branch != cfg.start_branch {
     pause("verification", "The current tip does not match start_branch. Checkout the intended tip and start a new run.");
