@@ -28,6 +28,9 @@ function compile(source, names) {
     trimmed: s => typeof s === 'string' ? s.trim() : '',
     as_array: a => Array.isArray(a) ? a : [],
     json_encode: JSON.stringify,
+    starts_with: (s,p) => s.startsWith(p),
+    ends_with: (s,p) => s.endsWith(p),
+    contains: (s,p) => s.includes(p),
   });
   for (const name of names) {
     const rhai = extract(source, name);
@@ -39,7 +42,7 @@ function compile(source, names) {
   return context;
 }
 const guard = compile(gate, ['verdict_complete', 'gate_blocked', 'lane_from', 'evidence_complete', 'is_block_severity']);
-const bguard = compile(branch, ['review_complete', 'verdict_complete', 'same_file_set']);
+const bguard = compile(branch, ['review_complete', 'verdict_complete', 'same_file_set', 'skip_file']);
 const verdict = (real, extra = {}) => ({success: true, output: {coverage_complete: true, real, reason: 'Inspected code', evidence: 'actual source', ...extra}});
 const lane = (findings = []) => ({success: true, output: {coverage_complete: true, findings, summary: 'Inspected all changes'}});
 
@@ -96,7 +99,7 @@ test('exact root and triple-dot scope are collected; bounded full evidence feeds
     assert.doesNotMatch(source,/\b(?:let raw|diff) = git_diff_since\(/);
     assert.match(source,/label: "scope", capability_mode: "execute"/);
     assert.doesNotMatch(source,/agent_type: "explore"/);
-    assert.equal((source.match(/capability_mode: "execute"/g)||[]).length,1);
+    assert.equal((source.match(/capability_mode: "execute"/g)||[]).length,source === branch ? 2 : 1);
     assert.match(source,/You have no shell/);
     assert.match(source,/MAX_EVIDENCE_CHARS/);
     assert.doesNotMatch(source,/diff = excerpt|map\[current\] = clip/);
@@ -232,4 +235,54 @@ test('actual lane routing verifies unknown severity as a blocker with an explici
     assert.equal(item.severity,'block');
     assert.match(item.severity_reason,/Unknown scanner severity.*candidate blocker pending verification/);
   }
+});
+
+function selectBranchFiles(parsed, explicit = []) {
+  const start = branch.indexOf('let files = [];\nlet skipped_n = 0;');
+  const end = branch.indexOf('\nif files.len() == 0 {',start);
+  assert(start > 0 && end > start);
+  const js = branch.slice(start,end).replace(/for (\w+) in (\w+) \{/g,'for (const $1 of $2) {')
+    .replace(/#\{/g,'{').replace(/\.len\(\)/g,'.length').replace(/\.to_string\(\)/g,'.toString()')
+    .replace(/\bif ([^\n{]+) \{/g,'if ($1) {');
+  const ctx = vm.createContext({parsed,explicit,skip_file:bguard.skip_file,log:()=>{},pause:()=>{throw Error('incomplete');}});
+  return vm.runInContext(js+'\n({files,skipped_n})',ctx);
+}
+
+test('actual selection runs before source collection and honors explicitly requested skipped files', () => {
+  assert.deepEqual(Array.from(selectBranchFiles(['asset.png','app.js']).files),['app.js']);
+  assert.deepEqual(Array.from(selectBranchFiles(['asset.png','app.js'],['asset.png']).files),['asset.png']);
+  assert.throws(()=>selectBranchFiles(['app.js'],['absent.js']),/incomplete/);
+  const selection = branch.indexOf('if skip_file(p)');
+  const sourceCollection = branch.indexOf('let source_result = agent(source_prompt');
+  assert(selection > 0 && sourceCollection > selection);
+  assert.match(branch,/head_commit: scope.head_commit, files: files, max_source_chars:/);
+  assert.match(branch,/Never collect blobs for unselected files/);
+  assert.match(branch,/explicitly selected binary files must fail incomplete/);
+});
+
+test('real binary-plus-source fixture preserves full manifest without collecting excluded binary blobs', () => {
+  const {execFileSync} = require('node:child_process');
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(),'review-coverage-binary-'));
+  const git = (...args) => execFileSync('git',['-C',dir,...args],{encoding:'utf8'}).trim();
+  try {
+    git('init','-q'); git('config','user.email','test@example.invalid'); git('config','user.name','Coverage Fixture');
+    fs.writeFileSync(path.join(dir,'app.js'),'export const n = 1;\n'); git('add','.'); git('commit','-qm','base');
+    const base = git('rev-parse','HEAD');
+    fs.writeFileSync(path.join(dir,'asset.png'),Buffer.alloc(150000,0));
+    fs.writeFileSync(path.join(dir,'app.js'),'export const n = 2;\n'); git('add','.'); git('commit','-qm','mixed change');
+    const head = git('rev-parse','HEAD');
+    const manifest = git('diff','--name-only','-z','--no-renames',base,head,'--').split('\0').filter(Boolean);
+    const diff = git('diff','--no-ext-diff','--no-textconv','--no-renames',base,head,'--');
+    const headers = [...diff.matchAll(/^diff --git a\/.* b\/(.*)$/gm)].map(m=>m[1]);
+    assert.equal(bguard.same_file_set(manifest,headers),true);
+    assert.match(diff,/Binary files/);
+    const selected = selectBranchFiles(manifest);
+    assert.deepEqual(Array.from(selected.files),['app.js']);
+    const sources = Object.fromEntries(Array.from(selected.files,p=>[p,git('show',head+':'+p)]));
+    assert.equal(sources['asset.png'],undefined);
+    assert.equal(sources['app.js'],'export const n = 2;');
+    assert(diff.length+JSON.stringify(sources).length < 120000);
+    assert.equal(selected.skipped_n,1);
+  } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });

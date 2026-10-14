@@ -92,3 +92,8 @@ test('skipped tests and incomplete plan verdicts cannot authorize submission', (
   assert.match(graphite, /if !plan_verdict_complete\(matched, verdict_valid\) \{\s*coverage_complete = false;/);
   assert.match(graphite, /if accepted && !rejected && matched == 1 && verdict_valid \{/);
 });
+test('repair cleanliness preserves the collector allowed-untracked-note policy', () => {
+  assert.match(graphite, /Use the same normalized cleanliness rule as collection: ignore ONLY untracked paths under plans\/, \.grok\/, docs\/goals\/, docs\/brainstorms\/, and docs\/solutions\//);
+  assert.match(graphite, /Any other modified, staged, deleted or untracked path means clean=false/);
+  assert.match(graphite, /Never delete, stage or stash ignored notes/);
+});
