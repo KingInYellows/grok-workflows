@@ -514,7 +514,7 @@ let plan_r = agent(plan_prompt, #{
 });
 
 if plan_r == () || !plan_r.success || plan_r.output == () {
-    pause("infra", "Plan agent failed. Start a new run to retry. Resume replays this failed result.");
+    pause("infra", "Plan agent failed and may have written a partial process file at " + plan_path + ". Inspect and reconcile it with the intended tracks before starting a new run; preserve user edits and do not blindly overwrite or delete it. Resume replays this failed result.");
 }
 
 let plan = plan_r.output;

@@ -106,7 +106,7 @@ add_dest() {
 }
 
 add_dest "${GROK_HOME:-$HOME/.grok}"
-for extra in "${EXTRA_DESTS[@]}"; do
+for extra in "${EXTRA_DESTS[@]+"${EXTRA_DESTS[@]}"}"; do
   add_dest "$extra"
 done
 

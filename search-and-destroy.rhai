@@ -618,7 +618,7 @@ let plan_r = agent(plan_prompt, #{
 });
 
 if plan_r == () || !plan_r.success || plan_r.output == () {
-    pause("infra", "Plan agent failed. Start a new run to retry. Resume replays this failed result.");
+    pause("infra", "Plan agent failed and may have written partial artifacts. Inspect and reconcile the process file " + plan_path + " and todo file " + todo_path + " with the intended work before starting a new run; preserve any user edits and do not blindly overwrite or delete them. Resume replays this failed result.");
 }
 
 let written_plan = plan_path;

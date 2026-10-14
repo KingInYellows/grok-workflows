@@ -416,7 +416,7 @@ let uni_r = agent(uni_prompt, #{
 });
 
 if uni_r == () || !uni_r.success || uni_r.output == () {
-    pause("infra", "Universal template agent failed. Start a new run to retry. Resume replays this failed result.");
+    pause("infra", "Universal template agent failed and may have written a partial export tree under " + out_dir + ". Inspect and reconcile UNIVERSAL_WORKFLOW_TEMPLATE.md, INDEX.md, and ir/ with the intended export before starting a new run; preserve user edits and do not blindly overwrite or delete artifacts. Resume replays this failed result.");
 }
 
 let template_path = if uni_r.output.template_path != () { trimmed(uni_r.output.template_path) } else { out_dir + "/UNIVERSAL_WORKFLOW_TEMPLATE.md" };

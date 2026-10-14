@@ -127,6 +127,22 @@ fn queue_scan_verified(output) {
     return map_bool(output, "mq_scan_complete", false) && type_of(count) == "i64" && count >= 0 && count < 100;
 }
 
+fn valid_tip_oid(oid) {
+    if type_of(oid) != "string" { return false; }
+    if oid.len() != 40 && oid.len() != 64 { return false; }
+    let i = 0;
+    while i < oid.len() {
+        let ch = oid.sub_string(i, 1);
+        if !((ch >= "0" && ch <= "9") || (ch >= "a" && ch <= "f")) { return false; }
+        i += 1;
+    }
+    return true;
+}
+
+fn tip_snapshot_matches(diag) {
+    return diag.tip_identity_verified && valid_tip_oid(diag.local_tip_sha) && valid_tip_oid(diag.remote_tip_sha) && diag.local_tip_sha == diag.remote_tip_sha;
+}
+
 let discover_schema = #{
     "type": "object",
     "required": ["ok", "error", "repo", "trunk", "tip_branch", "tip_pr", "dirty", "already_queued", "prs", "mq_scan_complete", "mq_scan_count"],
@@ -164,8 +180,11 @@ let discover_schema = #{
 
 let diagnose_schema = #{
     "type": "object",
-    "required": ["ok", "error", "verdict", "ready", "waiting_ci", "already_queued", "needs_get", "needs_restack", "needs_unfreeze", "needs_submit", "blocked", "block_reason", "dry_run_excerpt", "frozen", "unsubmitted", "mq_drafts", "recommended_action", "mq_scan_complete", "mq_scan_count"],
+    "required": ["ok", "error", "verdict", "ready", "waiting_ci", "already_queued", "needs_get", "needs_restack", "needs_unfreeze", "needs_submit", "blocked", "block_reason", "dry_run_excerpt", "frozen", "unsubmitted", "mq_drafts", "recommended_action", "mq_scan_complete", "mq_scan_count", "tip_identity_verified", "local_tip_sha", "remote_tip_sha"],
     "properties": #{
+        "tip_identity_verified": #{ "type": "boolean" },
+        "local_tip_sha": #{ "type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$" },
+        "remote_tip_sha": #{ "type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$" },
         "mq_scan_complete": #{ "type": "boolean" },
         "mq_scan_count": #{ "type": "integer", "minimum": 0, "maximum": 100 },
         "ok": #{ "type": "boolean" },
@@ -277,7 +296,7 @@ fn rules_text() {
     t += "- Always pass `--no-interactive` to gt. Submit with `--no-edit --no-ai`.\n";
     t += "- `gt merge` merges trunk through the CURRENT branch. Checkout the TIP (to_pr / top of the range) first.\n";
     t += "- Immediately before any mutating command, including after user approval, re-run git status --porcelain and require a successful empty result. Dirty or uncertain state blocks mutation; never stash or discard changes automatically. The sole exception is aborting a conflicting Graphite operation that this workflow just started, after verifying that operation is still in progress. Never abort an unrelated or pre-existing operation.\n";
-    t += "- Before a live land: `gt get <tip> --downstack --force --no-restack --no-interactive` so local matches submitted remotes. On dry-run, do not `--force`.\n";
+    t += "- Mandatory pre-land synchronization runs in Prepare: `gt get <tip> --downstack --force --no-restack --no-interactive` so local matches submitted remotes. Enqueue uses the resulting diagnosis snapshot and must not sync again. On dry-run, do not `--force`.\n";
     t += "- `gt merge --dry-run` saying branches 'have not been submitted' often means the parent SHA is stale, not that GitHub PRs are missing.\n";
     t += "- Frozen branches skip restack. Unfreeze descendants of a stale parent, restack, then submit. Do not unfreeze a parent that is already the intended base.\n";
     t += "- If Graphite MQ drafts (`head:gtmq` or title `[Graphite MQ]`) already exist for this stack, do NOT restack or `gt submit --always`. Restacking evicts queued PRs.\n";
@@ -306,7 +325,8 @@ fn discover_prompt(cfg_map, cfg_json) {
 fn diagnose_prompt(cfg_map, disc_json) {
     let p = "You are the diagnose worker for graphite-stack-merge. Use tools. Do not answer from memory.\n";
     p += rules_text();
-    p += "Stay on the verified current tip. Run only gt merge --dry-run --no-interactive, gh pr list --state open --search 'head:gtmq' --limit 100 --json number,title,headRefName,baseRefName, and gh pr view <number> --json state,statusCheckRollup,mergeStateStatus for each discovered PR. Do not checkout, get, restack, submit, or merge live.\n";
+    p += "Stay on the verified current tip. Run only git branch --show-current, git rev-parse HEAD, gt merge --dry-run --no-interactive, gh pr list --state open --search 'head:gtmq' --limit 100 --json number,title,headRefName,baseRefName, and gh pr view <number> --json state,statusCheckRollup,mergeStateStatus,headRefOid,headRefName for each discovered PR. Do not checkout, get, restack, submit, or merge live.\n";
+    p += "Capture local_tip_sha from git rev-parse HEAD and remote_tip_sha from headRefOid of discovery.tip_pr, confirming the current branch and headRefName both equal discovery.tip_branch. Re-read both IDs after the dry-run/check inspection; if either changed, the branch differs, or any read failed, set tip_identity_verified=false and ok=false. Otherwise return the exact full lowercase hexadecimal IDs and tip_identity_verified=true. A local/remote difference before synchronization sets needs_get=true and ready=false; it is not permission to merge.\n";
     p += "Use the actual dry-run stdout/stderr and exit status to populate the diagnosis. Exit 1 alone is not readiness or a specific repair request. Set ok=false, ready=false, and blocked=true for command failures, ambiguous output, or missing required evidence. Set ready=true only on an explicit successful merge dry-run and verified non-blocking PR state. Set needs_get, needs_restack, needs_unfreeze, or needs_submit only when the output explicitly identifies that condition and the affected branches; never guess.\n";
     p += "waiting_ci may be true at the same time as already_queued. Verdict stays already_queued only when MQ evidence matches this stack; do not restack queued work. Unrelated MQ drafts are not evidence this stack is queued.\n";
     p += "Always return recommended_action using exactly this priority: already_queued=true -> wait-queue; blocked=true or ok=false -> stop; ready=true -> merge; waiting_ci=true with no other blocker -> merge-when-ready; otherwise -> stop. Pending preparation is not readiness: set stop until a fresh diagnosis after preparation verifies merge or merge-when-ready. Never omit recommended_action.\n";
@@ -341,6 +361,7 @@ fn enqueue_prompt(cfg_map, disc_json, diag_json, action) {
     p += "The user confirmed landing this stack. Stay on the tip branch.\n";
     p += "Requested action: " + action + "\n";
     p += "If already_queued: do not call gt merge again. Count OPEN vs MERGED PRs in the range with gh. ok=true, queued=true, action=already-queued.\n";
+    p += "The mandatory synchronization already completed before this diagnosis; do not run get again. Immediately before either live landing command below, run git branch --show-current, git rev-parse HEAD, and gh pr view <discovery.tip_pr> --json headRefName,headRefOid. Require the branch and headRefName to equal discovery.tip_branch and require current local HEAD == diagnosis.local_tip_sha == diagnosis.remote_tip_sha == current remote headRefOid. Require successful reads and full valid OIDs. On any mismatch, missing value, dirty checkout, or command failure, return ok=false without merging or submitting; never refresh the expected snapshot in this worker. Do not checkout, get, restack, or commit between this check and landing. This is a point-in-time check, not atomic expected-SHA protection: the CLI supplies no expected-SHA precondition here, so another actor can still race the landing.\n";
     p += "If action is merge: `gt merge -c --no-interactive`. If it aborts because of unsubmitted branches, stop; do not fall back to gh pr merge.\n";
     p += "If action is merge-when-ready: `gt submit --merge-when-ready --always --update-only --no-edit --no-ai --no-interactive` from the tip so Graphite marks the downstack. Then `gt merge --dry-run --no-interactive` to confirm queued/waiting.\n";
     p += "Count merged vs still-open PRs in the from_pr/to_pr range (or the discovered list).\n";
@@ -414,6 +435,9 @@ fn apply_diagnose(res) {
     let frozen = [];
     let unsubmitted = [];
     let mq_drafts = [];
+    let tip_identity_verified = false;
+    let local_tip_sha = "";
+    let remote_tip_sha = "";
     if res != () && res.success && res.output != () && type_of(res.output) == "map" {
         let o = res.output;
         ok = map_bool(o, "ok", false);
@@ -421,6 +445,13 @@ fn apply_diagnose(res) {
         if !queue_scan_verified(o) {
             ok = false;
             error = "Graphite queue scan is incomplete, capped, or missing evidence; no mutation is permitted";
+        }
+        tip_identity_verified = map_bool(o, "tip_identity_verified", false);
+        local_tip_sha = map_str(o, "local_tip_sha");
+        remote_tip_sha = map_str(o, "remote_tip_sha");
+        if !tip_identity_verified || !valid_tip_oid(local_tip_sha) || !valid_tip_oid(remote_tip_sha) {
+            ok = false;
+            error = "Tip identity snapshot is missing, invalid, or changed during diagnosis";
         }
         verdict = map_str(o, "verdict");
         if verdict == "" { verdict = "blocked"; }
@@ -463,6 +494,9 @@ fn apply_diagnose(res) {
         frozen: frozen,
         unsubmitted: unsubmitted,
         mq_drafts: mq_drafts,
+        tip_identity_verified: tip_identity_verified,
+        local_tip_sha: local_tip_sha,
+        remote_tip_sha: remote_tip_sha,
     }
 }
 
@@ -688,6 +722,9 @@ if action == "wait-queue" {
     });
 }
 
+if !tip_snapshot_matches(diag) {
+    pause("verification", "Post-synchronization local and remote tip identities do not match. No landing attempted; inspect concurrent changes before a new run.");
+}
 phase("Enqueue");
 if cfg.confirm {
     await_user("user", "Enqueue Graphite stack via " + action + " from tip " + disc.tip_branch + "? Resume to land. This calls gt merge or merge-when-ready.");

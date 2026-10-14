@@ -241,3 +241,65 @@ test('cycle submit prompt and all included guardrails agree on creation versus u
   assert.match(prompt, /ambiguous lookup failures never prove absence/);
   assert.match(prompt, /Publish is a second submit for the verified existing PR/);
 });
+
+test('merge carries a validated equal tip snapshot and checks it again immediately before landing', () => {
+  const merge = read('graphite-stack-merge.rhai');
+  const validBody = merge.split('fn valid_tip_oid(oid) {')[1].split('\nfn tip_snapshot_matches')[0];
+  const jsBody = validBody.slice(0, validBody.lastIndexOf('}'))
+    .replaceAll('oid.len()', 'oid.length').replaceAll('oid.sub_string(i, 1)', 'oid.slice(i, i + 1)')
+    .replace(/if (.+) \{/g, 'if ($1) {').replace(/while (.+) \{/g, 'while ($1) {');
+  const valid = new Function('oid', 'type_of', jsBody);
+  const validOid = oid => valid(oid, value => typeof value);
+  const predicate = merge.match(/return (diag.tip_identity_verified[^\n]+);/)[1];
+  const matches = new Function('diag', 'valid_tip_oid', `return ${predicate};`);
+  const sha = 'a'.repeat(40), other = 'b'.repeat(40);
+  assert.equal(matches({ tip_identity_verified: true, local_tip_sha: sha, remote_tip_sha: sha }, validOid), true);
+  for (const value of ['', 'a'.repeat(39), 'x'.repeat(40), 'A'.repeat(40), null]) assert.equal(validOid(value), false);
+  assert.equal(validOid('c'.repeat(64)), true);
+  assert.equal(matches({ tip_identity_verified: true, local_tip_sha: sha, remote_tip_sha: other }, validOid), false);
+  assert.equal(matches({ tip_identity_verified: false, local_tip_sha: sha, remote_tip_sha: sha }, validOid), false);
+  for (const field of ['tip_identity_verified', 'local_tip_sha', 'remote_tip_sha']) {
+    assert.match(merge, new RegExp(`${field}: ${field},`));
+  }
+  assert.ok(merge.indexOf('if !tip_snapshot_matches(diag)') < merge.indexOf('let enq_res = agent('));
+  const enqueue = merge.split('fn enqueue_prompt(')[1].split('\nfn ')[0];
+  assert.ok(enqueue.indexOf('current local HEAD == diagnosis.local_tip_sha') < enqueue.indexOf('If action is merge:'));
+  assert.match(enqueue, /never refresh the expected snapshot/);
+  assert.match(enqueue, /not atomic expected-SHA protection/);
+});
+
+test('verify invokes Bash syntax checking separately and catches an invalid second script', t => {
+  const dir = fixture(t);
+  fs.mkdirSync(path.join(dir, 'scripts'));
+  fs.mkdirSync(path.join(dir, 'workflow-support/graphite-stack-review'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'scripts/verify.sh'), read('scripts/verify.sh'));
+  fs.writeFileSync(path.join(dir, 'sync-workflows.sh'), '#!/bin/bash\necho valid\n');
+  fs.writeFileSync(path.join(dir, 'scripts/update-workflows.sh'), '#!/bin/bash\nif then\n');
+  fs.writeFileSync(path.join(dir, 'workflow-support/graphite-stack-review/cli.mjs'), '// poll: cmdPoll\n');
+  const result = spawnSync('bash', ['scripts/verify.sh'], { cwd: dir, encoding: 'utf8' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /scripts\/update-workflows.sh/);
+  assert.match(result.stderr, /syntax error/);
+});
+
+test('Bash 3.2 empty optional destination expansion uses nounset-safe form', () => {
+  const installer = read('sync-workflows.sh');
+  assert.ok(installer.includes('for extra in "${EXTRA_DESTS[@]+"${EXTRA_DESTS[@]}"}"; do'));
+  assert.ok(!installer.includes('for extra in "${EXTRA_DESTS[@]}"; do'));
+});
+
+test('write-phase recovery reconciles partial artifacts before requesting a new run', () => {
+  for (const [file, marker, paths] of [
+    ['search-and-destroy.rhai', 'Plan agent failed and may have written partial artifacts', ['plan_path', 'todo_path']],
+    ['export-workflows.rhai', 'Universal template agent failed and may have written a partial export tree', ['out_dir']],
+    ['implement-from-plan.rhai', 'Plan agent failed before a process file was confirmed and may have written a partial file', ['plan_path']],
+    ['multi-track-ship.rhai', 'Plan agent failed and may have written a partial process file', ['plan_path']],
+  ]) {
+    const line = read(file).split('\n').find(line => line.includes(marker));
+    assert.ok(line, file);
+    for (const name of paths) assert.ok(line.includes(`+ ${name} +`), `${file}: ${name}`);
+    assert.ok(line.indexOf('Inspect and reconcile') < line.indexOf('before starting a new run'));
+    assert.match(line, /preserve.*user edits/i);
+    assert.match(line, /do not blindly overwrite or delete/);
+  }
+});
