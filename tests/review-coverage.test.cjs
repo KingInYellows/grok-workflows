@@ -286,3 +286,24 @@ test('real binary-plus-source fixture preserves full manifest without collecting
     assert.equal(selected.skipped_n,1);
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
+test('ordinary Unicode paths match verbatim manifests with core.quotePath=false', () => {
+  const {execFileSync} = require('node:child_process');
+  const os = require('node:os');
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'review-coverage-unicode-'));
+  const git=(...args)=>execFileSync('git',['-C',dir,...args],{encoding:'utf8'}).trim();
+  try {
+    git('init','-q');git('config','user.email','test@example.invalid');git('config','user.name','Coverage Fixture');
+    fs.writeFileSync(path.join(dir,'café.txt'),'before\n');git('add','.');git('commit','-qm','base');
+    const base=git('rev-parse','HEAD');
+    fs.writeFileSync(path.join(dir,'café.txt'),'after\n');git('add','.');git('commit','-qm','change');
+    const head=git('rev-parse','HEAD');
+    const manifest=git('diff','--name-only','-z',base,head,'--').split('\0').filter(Boolean);
+    const quoted=git('-c','core.quotePath=true','diff',base,head,'--');
+    assert.match(quoted,/\\303\\251/);
+    const diff=git('-c','core.quotePath=false','diff','--no-ext-diff','--no-textconv','--no-renames',base,head,'--');
+    const headers=[...diff.matchAll(/^diff --git a\/.* b\/(.*)$/gm)].map(m=>m[1]);
+    assert.equal(bguard.same_file_set(manifest,headers),true);
+    assert.deepEqual(headers,['café.txt']);
+    assert.match(branch,/git -c core.quotePath=false diff --no-ext-diff/);
+  } finally {fs.rmSync(dir,{recursive:true,force:true});}
+});
