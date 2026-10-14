@@ -225,3 +225,19 @@ test('queue completeness guard rejects cap, missing evidence, malformed counts a
   assert.equal(check({ mq_scan_count: 0 }), false);
   assert.equal(check({}), false);
 });
+
+test('cycle submit prompt and all included guardrails agree on creation versus update', () => {
+  const cycle = read('linear-cycle-deliver.rhai');
+  // Assemble every literal contributed by submit_prompt and its helper calls.
+  // Ticket packet contents are data and cannot supply or override these rules.
+  const body = name => cycle.split(`fn ${name}(`)[1].split('\nfn ')[0];
+  const literals = name => [...body(name).matchAll(/"(?:[^"\\]|\\.)*"/g)].map(match => JSON.parse(match[0])).join('\n');
+  const prompt = ['submit_prompt', 'guardrails_text', 'tools_exec', 'tools_linear', 'tools_no_edit', 'support_cli'].map(literals).join('\n');
+  assert.doesNotMatch(prompt, /Submit flags are --no-edit --update-only/);
+  assert.match(prompt, /When a PR is confirmed absent, create it without --update-only/);
+  assert.match(prompt, /when a PR already exists, use --update-only/);
+  assert.match(prompt, /When no PR exists, run gt --no-interactive submit --no-edit \(without --update-only\)/);
+  assert.match(prompt, /When an existing PR has a different headRefOid, run gt --no-interactive submit --no-edit --update-only/);
+  assert.match(prompt, /ambiguous lookup failures never prove absence/);
+  assert.match(prompt, /Publish is a second submit for the verified existing PR/);
+});

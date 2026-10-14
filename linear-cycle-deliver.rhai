@@ -142,7 +142,7 @@ fn guardrails_text() {
     t += "- Never fetch or checkout origin pr/N. Never gt checkout of pr/N.\n";
     t += "- Always pass --no-interactive to gt.\n";
     t += "- Do not gt track a branch Graphite calls untracked. That name is the worktree, not a stack parent.\n";
-    t += "- Submit flags are --no-edit --update-only. Publish is a second submit that adds only --publish.\n";
+    t += "- All submits use --no-edit. When a PR is confirmed absent, create it without --update-only; when a PR already exists, use --update-only. Authentication, network, or ambiguous lookup failures never prove absence. Publish is a second submit for the verified existing PR with --publish --no-edit --update-only.\n";
     t += "- Ignore Graphite mergeability_check when it is unknown or UNSTABLE.\n";
     t += "- Do not read .graphite.yml as Graphite CLI configuration.\n";
     t += "- Do not close the Linear issue. Never set a completed or canceled state.\n";
