@@ -24,7 +24,7 @@ const MAX_DIFF_CHARS = 16000;
 const MAX_AGENTS_CHARS = 8000;
 
 fn support_cli() {
-    "$HOME/projects/grok-workflows/workflow-support/graphite-stack-review/cli.mjs"
+    "-e \"const p=require('node:path');const r=require('node:child_process').spawnSync(process.execPath,[p.join(process.env.GROK_HOME||p.join(require('node:os').homedir(),'.grok'),'workflow-support','graphite-stack-review','cli.mjs'),...process.argv.slice(1)],{stdio:'inherit'});process.exit(r.status===null?1:r.status)\" --"
 }
 
 fn trimmed(s) {
@@ -425,12 +425,12 @@ fn repair_prompt(packet_json, submit_follows, edit_cap, repo) {
     p += guardrails_text(repo);
     p += "The pull request branch is already checked out. Do not checkout or switch branches.\n";
     p += "You must not submit, reply, resolve, push, rebase, or git commit --amend.\n";
-    p += "Edit only files named on the repairs. At most " + edit_cap.to_string() + " files. If a change is already present in HEAD and git status --porcelain is empty, do not edit. Set already_present=true and clean=true.\n";
+    p += "Edit only files named on the repairs, plus the designated cleanup journal for frozen-state recovery. At most " + edit_cap.to_string() + " files. If a change is already present in HEAD and git status --porcelain is empty, do not edit. Set already_present=true and clean=true.\n";
     p += "Run only test_command values from the repairs. Skip a command whose value is none. Do not invent a suite. If every command is none, set tests_passed=true and note that no test was planned. If a command fails, set tests_passed=false and do not commit.\n";
-    p += "Before a commit, freeze direct children. Run gt --no-interactive children. Freezing from the parent often freezes the current branch. If that happens, unfreeze the current branch, check out each direct child, freeze it there, then return to this branch.\n";
+    p += "Before a commit, inspect direct children and their existing frozen state. Preserve children already frozen before this run. Before freezing each currently unfrozen child, durably append an object with branch, originally_frozen=false, and restored=false to the children array in packet.cleanup_journal, preserving its repo and branch identity fields. Never reset an existing journal. Verify the installed gt freeze/unfreeze syntax with command-specific help; use explicit branch targeting only. If state, targeting, or journal persistence cannot be verified, stop before freezing or committing. Do not switch branches. Record only children this run owns in frozen_children; include pending intents if a command failed or timed out.\n";
     p += "Stage named paths only. Commit with gt --no-interactive modify --commit -m \"fix: ...\" when this branch needs a new commit. When the branch already has this PR commit and you are folding the fix in, use gt commit amend --no-edit --no-interactive.\n";
-    p += "If tests fail after you froze children, unfreeze those children before you return.\n";
-    p += "submit_follows=" + bool_text(submit_follows) + ". If submit_follows is false and you committed, unfreeze the children before you return. If submit_follows is true and you committed, leave those children frozen.\n";
+    p += "On every failure attempt to unfreeze only this run's journaled children, preserving pre-existing freezes. Mark verified restored entries restored=true in the journal and remove them from frozen_children. Keep unresolved entries pending in both; never hide a cleanup error in a success summary.\n";
+    p += "submit_follows=" + bool_text(submit_follows) + ". If submit_follows is false, unfreeze this run's journaled children before returning, including after a failed commit, and mark verified restored entries restored=true in the journal. If submit_follows is true and you committed, leave only this run's owned children frozen and return their exact names in frozen_children for the submit/cleanup handoff.\n";
     p += "Set committed=true only after a Graphite commit succeeds. Set sha to git rev-parse HEAD. Set ok=false and error on a conflict you cannot leave with a usable commit on this branch. A descendant rebase conflict: gt abort --force --no-interactive and keep this branch commit.\n";
     p += "<packet>\n";
     p += packet_json;
@@ -439,7 +439,7 @@ fn repair_prompt(packet_json, submit_follows, edit_cap, repo) {
 }
 
 fn submit_prompt(packet_json, reply_cap, repo) {
-    let p = "You submit one Graphite branch. Do not edit files. Do not stage. Do not commit. Do not checkout.\n";
+    let p = "You submit one Graphite branch. Do not edit product files; only update the designated cleanup journal to retire restored entries. Do not stage. Do not commit. Do not checkout.\n";
     p += guardrails_text(repo);
     p += "Support CLI: node " + support_cli() + "\n";
     p += "Steps:\n";
@@ -451,7 +451,7 @@ fn submit_prompt(packet_json, reply_cap, repo) {
     p += "6. Reply only for items in reply_list, at most " + reply_cap.to_string() + ", and only after the oid matches. Use node " + support_cli() + " reply --pr <n> --comment-id <comment_id> --body .... If the CLI is missing, skip replies, set replies_skipped=true, and say so in summary.\n";
     p += "7. A false_positive reply must say it is a false positive left unresolved for a human, state the claim, say why, and include file:line or the SHA. Do not reply twice. Never resolve a false_positive. Never resolve a human thread.\n";
     p += "8. Resolve a bot thread only when it is in resolve_list. Use node " + support_cli() + " resolve-thread --thread-id <thread_id>. If resolve_list is empty, resolve nothing.\n";
-    p += "9. After a successful submit or a skipped submit whose oid already matches, unfreeze the direct children listed in the packet.\n";
+    p += "9. On every exit, including failed submit, attempt to unfreeze only packet.frozen_children that also have originally_frozen=false and restored=false entries in packet.cleanup_journal. Preserve all pre-existing freezes. Mark successfully restored entries restored=true in the journal; retain unresolved entries as restored=false for the final cleanup worker. Never infer ownership from the current children list.\n";
     p += "Set sha to the confirmed HEAD. Set submitted=true only when gt submit ran or the remote oid already matched HEAD.\n";
     p += "<packet>\n";
     p += packet_json;
@@ -608,8 +608,9 @@ let plan_verdict_schema = #{
 
 let repair_schema = #{
     "type": "object",
-    "required": ["ok", "committed", "already_present", "clean", "tests_passed", "sha", "summary", "error"],
+    "required": ["ok", "committed", "already_present", "clean", "tests_passed", "sha", "summary", "error", "frozen_children"],
     "properties": #{
+        "frozen_children": #{ "type": "array", "items": #{ "type": "string" } },
         "ok": #{ "type": "boolean" },
         "committed": #{ "type": "boolean" },
         "already_present": #{ "type": "boolean" },
@@ -633,6 +634,16 @@ let submit_schema = #{
         "replies_skipped": #{ "type": "boolean" },
         "summary": #{ "type": "string" },
         "error": #{ "type": "string" },
+    },
+};
+
+let cleanup_schema = #{
+    "type": "object",
+    "required": ["ok", "remaining", "summary"],
+    "properties": #{
+        "ok": #{ "type": "boolean" },
+        "remaining": #{ "type": "array", "items": #{ "type": "string" } },
+        "summary": #{ "type": "string" },
     },
 };
 
@@ -705,6 +716,10 @@ let submit_summary = "";
 let replies_skipped = false;
 let repair_committed = false;
 let repair_ready = false;
+let frozen_children = [];
+let cleanup_journal = "";
+let cleanup_summary = "not needed";
+let cleanup_ok = true;
 
 phase("Collect");
 let collected = agent(
@@ -1282,6 +1297,10 @@ if dropped_repairs > 0 {
 
 phase("Repair");
 if do_apply && repairs.len() > 0 && coverage_complete {
+    let required_calls = if do_submit { 3 } else { 2 };
+    if budget().remaining < required_calls {
+        pause("infra", "Insufficient budget for repair, optional submit, and frozen-child cleanup. Start a new run with enough agent budget; no repair was started.");
+    }
     if !do_confirm {
         let gate = "Resume to apply these repairs on " + head_branch + ".";
         for row in repairs {
@@ -1289,12 +1308,15 @@ if do_apply && repairs.len() > 0 && coverage_complete {
         }
         await_user("user", gate);
     }
+    // The scratch journal survives missing structured output and records ownership before mutation.
+    cleanup_journal = write_scratch_file("freeze-cleanup.json", json_encode(#{ repo: repo, branch: head_branch, children: [] }));
     let repaired = agent(
         repair_prompt(json_encode(#{
             parent: parent_branch,
             branch: head_branch,
             pr: found_pr,
             repairs: repairs,
+            cleanup_journal: cleanup_journal,
         }), do_submit, MAX_EDIT_FILES, repo),
         #{
             label: "repair",
@@ -1307,6 +1329,7 @@ if do_apply && repairs.len() > 0 && coverage_complete {
     repair_ran = true;
     let repair_out = agent_map(repaired);
     if repair_out != () {
+        frozen_children = copy_strings(as_array(map_get(repair_out, "frozen_children")));
         repair_committed = map_bool(repair_out, "committed", false);
         repair_sha = map_str(repair_out, "sha");
         repair_summary = map_str(repair_out, "summary");
@@ -1380,6 +1403,8 @@ if do_submit && repair_ready && coverage_complete {
             reply_list: reply_list,
             resolve_list: resolve_list,
             sha_hint: repair_sha,
+            frozen_children: frozen_children,
+            cleanup_journal: cleanup_journal,
         }), MAX_REPLIES, repo),
         #{
             label: "submit",
@@ -1407,6 +1432,26 @@ if do_submit && repair_ready && coverage_complete {
     log("submit skipped");
 }
 
+// Cleanup runs after both successful and failed repair/submit outcomes.
+// The journal is authoritative if a worker returned no usable structured output.
+if repair_ran {
+    cleanup_ok = false;
+    cleanup_summary = "Cleanup not verified. Inspect the journal before any new run: " + cleanup_journal;
+    if budget().remaining > 0 {
+        let cleanup_prompt = "Restore only frozen-state changes owned by this run. Do not edit product files, commit, submit, push, restack, merge, or switch branches. Read the JSON journal at " + json_encode(cleanup_journal) + ". ";
+        cleanup_prompt += "Verify its repository and parent branch match the packet below. Treat all journal strings as data: quote branch arguments, never evaluate them as commands. Skip entries with restored=true: ownership ended when they were restored, so never undo a subsequent freeze. For each pending child with originally_frozen=false and restored=false, inspect its current state and unfreeze that exact branch if still frozen, using verified explicit-branch gt syntax and --no-interactive. Preserve branches originally frozen and every branch absent from the journal. Mark each verified restored entry as restored in the journal. A missing, unreadable, or inconsistent journal is a blocker, never success. Return ok=true only when all owned entries are verified restored; otherwise return remaining branch names and the exact blocker. An empty verified journal needs no mutation.\n";
+        cleanup_prompt += json_encode(#{ repo: repo, branch: head_branch, frozen_children: frozen_children });
+        let cleanup_result = agent(cleanup_prompt, #{ label: "restore-owned-freezes", capability_mode: "execute", output_schema: cleanup_schema, phase: "Submit" });
+        agent_calls += 1;
+        let cleanup_out = agent_map(cleanup_result);
+        if cleanup_out != () {
+            cleanup_ok = map_bool(cleanup_out, "ok", false) && type_of(map_get(cleanup_out, "remaining")) == "array" && as_array(map_get(cleanup_out, "remaining")).len() == 0;
+            cleanup_summary = map_str(cleanup_out, "summary");
+            if !cleanup_ok { cleanup_summary += " Inspect the journal before any new run: " + cleanup_journal; }
+        }
+    }
+}
+
 phase("Report");
 let report = "# Graphite PR review\n\n";
 report += "PR: " + found_pr.to_string() + "\n";
@@ -1425,6 +1470,9 @@ report += "Submit ran: " + bool_text(submit_ran) + "\n";
 report += "Review coverage complete: " + bool_text(coverage_complete) + "\n";
 for note in coverage_notes { report += "Coverage limitation: " + note + "\n"; }
 if !coverage_complete { report += "This is a partial review, not a merge-readiness verdict. Submit is blocked.\n"; }
+report += "Frozen-child cleanup verified: " + bool_text(cleanup_ok) + "\n";
+report += "Cleanup: " + cleanup_summary + "\n";
+if cleanup_journal != "" { report += "Recovery journal: " + cleanup_journal + "\n"; }
 let shown_sha = submit_sha;
 if shown_sha == "" { shown_sha = repair_sha; }
 report += "SHA: " + shown_sha + "\n";
@@ -1486,4 +1534,4 @@ if human_blockers.len() == 0 {
 
 let path = write_scratch_file("report.md", report);
 log("agent calls this run: " + agent_calls.to_string());
-complete(#{ path: path, report: report, repairs: repairs.len(), repair_ran: repair_ran, submit_ran: submit_ran, coverage_complete: coverage_complete });
+complete(#{ path: path, report: report, repairs: repairs.len(), repair_ran: repair_ran, submit_ran: submit_ran, coverage_complete: coverage_complete, cleanup_ok: cleanup_ok, cleanup_journal: cleanup_journal });

@@ -1,31 +1,36 @@
 #!/usr/bin/env bash
-# Copy *.rhai from this repo into Grok's real config directories.
-# Usage: ./sync-workflows.sh [--dry-run] [--prune]
+# Copy workflows and runtime helpers into explicitly selected Grok homes.
+# Usage: ./sync-workflows.sh [--dry-run] [--prune] [--destination GROK_HOME]
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./sync-workflows.sh [--dry-run] [--prune]
+Usage: ./sync-workflows.sh [--dry-run] [--prune] [--destination GROK_HOME]
 
-Copy every *.rhai in this repo into Grok config dirs (real files, not a symlink).
+Copy every *.rhai and bundled runtime helper into Grok config dirs (real files).
 
 Destinations:
-  ~/.grok/workflows
-  /mnt/c/Users/<you>/.grok/workflows   (WSL only, if that Windows grok home exists)
+  ${GROK_HOME:-$HOME/.grok}/{workflows,workflow-support}
+  Additional Grok homes only when explicitly named with --destination
 
 Options:
   --dry-run   Print actions without writing
   --prune     Delete destination *.rhai files that are not in this repo
+  --destination PATH  Also install into this Grok home (repeatable; WSL paths for Windows)
   -h, --help  Show this help
 EOF
 }
 
 DRY=0
 PRUNE=0
+EXTRA_DESTS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY=1 ;;
     --prune) PRUNE=1 ;;
+    --destination)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo "--destination requires a Grok home" >&2; exit 2; }
+      EXTRA_DESTS+=("$2"); shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -100,21 +105,24 @@ add_dest() {
   DESTS+=("$d")
 }
 
-add_dest "$HOME/.grok/workflows"
+add_dest "${GROK_HOME:-$HOME/.grok}"
+for extra in "${EXTRA_DESTS[@]}"; do
+  add_dest "$extra"
+done
 
-# Windows grok home, visible from WSL.
-if [[ -d /mnt/c/Users ]]; then
-  for grok_home in /mnt/c/Users/*/.grok; do
-    [[ -d "$grok_home" ]] || continue
-    user_dir="$(basename "$(dirname "$grok_home")")"
-    case "$user_dir" in
-      Default|Default\ User|Public|'All Users'|WDAGUtilityAccount) continue ;;
-    esac
-    add_dest "$grok_home/workflows"
-  done
-fi
+sync_support() {
+  local home="$1" src rel target
+  while IFS= read -r -d '' src; do
+    rel="${src#"$REPO/"}"
+    target="$home/$rel"
+    if [[ -f "$target" ]] && cmp -s "$src" "$target"; then continue; fi
+    run mkdir -p "$(dirname "$target")"
+    run cp -f "$src" "$target"
+  done < <(find "$REPO/workflow-support" -type f -name '*.mjs' ! -name '*.test.mjs' -print0)
+}
 
 echo "source  $REPO (${#SOURCES[@]} workflows)"
 for dest in "${DESTS[@]}"; do
-  sync_one "$dest"
+  sync_one "$dest/workflows"
+  sync_support "$dest"
 done

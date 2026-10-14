@@ -368,6 +368,13 @@ if !impl_ok {
     });
 }
 
+// Never fall back to a new tester in the caller checkout.
+if impl_r == () || type_of(impl_r.agent_id) != "string" || trimmed(impl_r.agent_id) == "" {
+    let msg = "Implementation returned no resumable agent ID. Tests were not run; the isolated worktree was not applied. Inspect the implementation worktree and start a new run after recovery.";
+    let path = write_scratch_file("implement-approved-plan.md", msg);
+    complete(#{ path: path, status: "missing_implementation_agent", summary: msg, plan: plan_path, title: title, isolation: "worktree", parent_unchanged: true, tests_passed: false, files_changed: files_changed, notes: impl_notes });
+}
+
 phase("Test");
 log("Running tests in the implementer's worktree; will stop if they fail");
 
@@ -394,9 +401,7 @@ let test_opts = #{
     capability_mode: "execute",
     output_schema: test_schema,
 };
-if impl_r.agent_id != () {
-    test_opts.resume_from = impl_r.agent_id;
-}
+test_opts.resume_from = impl_r.agent_id;
 
 let test_r = agent(test_prompt, test_opts);
 

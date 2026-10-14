@@ -337,7 +337,7 @@ let ingest_r = agent(ingest_prompt, #{
 });
 
 if ingest_r == () || !ingest_r.success || ingest_r.output == () {
-    pause("infra", "Ingest failed. Resume to retry, or pass args.sources pointing at workflow files.");
+    pause("infra", "Ingest failed. Start a new run to retry, with args.sources pointing at workflow files. Resume replays this failed result.");
 }
 
 let ingest = ingest_r.output;
@@ -354,7 +354,7 @@ if ingest.workflows != () {
 }
 
 if workflows.len() == 0 {
-    pause("verification", "No workflows extracted. Point args.sources at .rhai workflow files (or run from a folder that contains them), then resume.");
+    pause("verification", "No workflows extracted. Point args.sources at .rhai workflow files (or run from a folder that contains them), then start a new run.");
 }
 
 let wf_blob = "";
@@ -416,7 +416,7 @@ let uni_r = agent(uni_prompt, #{
 });
 
 if uni_r == () || !uni_r.success || uni_r.output == () {
-    pause("infra", "Universal template agent failed. Resume to retry.");
+    pause("infra", "Universal template agent failed. Start a new run to retry. Resume replays this failed result.");
 }
 
 let template_path = if uni_r.output.template_path != () { trimmed(uni_r.output.template_path) } else { out_dir + "/UNIVERSAL_WORKFLOW_TEMPLATE.md" };

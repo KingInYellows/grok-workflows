@@ -942,7 +942,7 @@ if goal_text != "" {
     });
     if canned_result(choose_r) { finish_smoke(); }
     if choose_r == () || choose_r.success != true || choose_r.output == () {
-        pause("infra", "Choose agent failed. Resume to retry, or pass args.goal.");
+        pause("infra", "Choose agent failed. Start a new run to retry or provide args.goal. Resume replays this failed result.");
     }
     let chosen = choose_r.output;
     if is_canned(chosen) { finish_smoke(); }
@@ -953,7 +953,7 @@ if goal_text != "" {
     issue_lines = seen.lines;
     let evidence = clip(one_line(map_str(chosen, "evidence")), 400);
     if goal_text == "" || evidence == "" {
-        pause("verification", "Choose did not return a goal with evidence from the repo or an open issue. Pass args.goal or resume after the tracker is available.");
+        pause("verification", "Choose did not return a goal with evidence from the repo or an open issue. Start a new run with args.goal or after the tracker is available.");
     }
     log("Chose: " + goal_text);
     goal_json = json_encode(goal_text);
@@ -988,7 +988,7 @@ let scope_r = agent(scope_prompt, #{
 });
 if canned_result(scope_r) { finish_smoke(); }
 if scope_r == () || scope_r.success != true || scope_r.output == () {
-    pause("infra", "Scope agent failed. Resume to retry.");
+    pause("infra", "Scope agent failed. Start a new run to retry. Resume replays this failed result.");
 }
 
 let scope_out = scope_r.output;
@@ -1061,7 +1061,7 @@ let area_r = agent(area_prompt, #{
 });
 if canned_result(area_r) { finish_smoke(); }
 if area_r == () || area_r.success != true || area_r.output == () {
-    pause("infra", "Areas agent failed. Resume to retry.");
+    pause("infra", "Areas agent failed. Start a new run to retry. Resume replays this failed result.");
 }
 
 let norm = normalize_areas(map_get(area_r.output, "areas"), max_areas);

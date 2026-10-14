@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 export const SUPPORT_DIR =
   process.env.GRAPHITE_STACK_REVIEW_HOME ||
-  path.join(os.homedir(), ".grok", "workflow-support", "graphite-stack-review");
+  path.join(process.env.GROK_HOME || path.join(os.homedir(), ".grok"), "workflow-support", "graphite-stack-review");
 
 export const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 

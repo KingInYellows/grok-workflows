@@ -334,7 +334,7 @@ let scout_r = agent(scout_prompt, #{
 });
 
 if scout_r == () || !scout_r.success || scout_r.output == () {
-    pause("infra", "Scout agent failed. Resume to retry.");
+    pause("infra", "Scout agent failed. Start a new run to retry. Resume replays this failed result.");
 }
 
 let scout = scout_r.output;
@@ -384,7 +384,7 @@ let cand_r = agent(cand_prompt, #{
 });
 
 if cand_r == () || !cand_r.success || cand_r.output == () {
-    pause("infra", "Candidate miner failed. Resume to retry.");
+    pause("infra", "Candidate miner failed. Start a new run to retry. Resume replays this failed result.");
 }
 
 let candidates = [];
@@ -618,7 +618,7 @@ let plan_r = agent(plan_prompt, #{
 });
 
 if plan_r == () || !plan_r.success || plan_r.output == () {
-    pause("infra", "Plan agent failed. Resume to retry.");
+    pause("infra", "Plan agent failed. Start a new run to retry. Resume replays this failed result.");
 }
 
 let written_plan = plan_path;

@@ -242,7 +242,7 @@ fn map_bool(m, key, fallback) {
 }
 
 fn support_cli() {
-    "$HOME/projects/grok-workflows/workflow-support/graphite-stack-review/cli.mjs"
+    "-e \"const p=require('node:path');const r=require('node:child_process').spawnSync(process.execPath,[p.join(process.env.GROK_HOME||p.join(require('node:os').homedir(),'.grok'),'workflow-support','graphite-stack-review','cli.mjs'),...process.argv.slice(1)],{stdio:'inherit'});process.exit(r.status===null?1:r.status)\" --"
 }
 
 fn bool_text(v) {
@@ -438,7 +438,7 @@ let cfg = #{
     human_review_policy: human_review_policy,
     resume: resume_ckpt,
     skip_review: skip_review,
-    support_cli: "$HOME/projects/grok-workflows/workflow-support/graphite-stack-review/cli.mjs",
+    support_cli: "-e \"const p=require('node:path');const r=require('node:child_process').spawnSync(process.execPath,[p.join(process.env.GROK_HOME||p.join(require('node:os').homedir(),'.grok'),'workflow-support','graphite-stack-review','cli.mjs'),...process.argv.slice(1)],{stdio:'inherit'});process.exit(r.status===null?1:r.status)\" --",
 };
 
 fn guardrails_text() {
