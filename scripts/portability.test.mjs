@@ -303,3 +303,61 @@ test('write-phase recovery reconciles partial artifacts before requesting a new 
     assert.match(line, /do not blindly overwrite or delete/);
   }
 });
+
+test('complete landing snapshot rejects missing, duplicate, extra, invalid and malformed PR members', () => {
+  const merge = read('graphite-stack-merge.rhai');
+  const source = merge.split('fn stack_snapshot_verified(prs, snapshot) {')[1].split('\nlet discover_schema')[0];
+  const jsBody = source.slice(0, source.lastIndexOf('}')).replaceAll('.len()', '.length')
+    .replace(/for (\w+) in (\w+) \{/g, 'for (const $1 of $2) {')
+    .replace(/if (.+) \{/g, 'if ($1) {');
+  const verify = new Function('prs', 'snapshot', 'type_of', 'map_get', 'valid_tip_oid', jsBody);
+  const typeOf = value => Array.isArray(value) ? 'array' : Number.isInteger(value) ? 'i64' : typeof value;
+  const get = (value, key) => value?.[key];
+  const validOid = value => typeof value === 'string' && /^([a-f0-9]{40}|[a-f0-9]{64})$/.test(value);
+  const check = (prs, snapshot) => verify(prs, snapshot, typeOf, get, validOid);
+  const prs = [{ pr_number: 10 }, { pr_number: 20 }];
+  const heads = [{ pr_number: 10, head_sha: 'a'.repeat(40) }, { pr_number: 20, head_sha: 'b'.repeat(40) }];
+  assert.equal(check(prs, heads), true);
+  assert.equal(check(prs, [...heads].reverse()), true);
+  for (const snapshot of [[], heads.slice(1), [heads[0], heads[0]], [...heads, { pr_number: 30, head_sha: 'c'.repeat(40) }], [{ pr_number: 30, head_sha: 'c'.repeat(40) }, heads[1]], [{ ...heads[0], head_sha: 'short' }, heads[1]], [{ ...heads[0], pr_number: '10' }, heads[1]], null]) {
+    assert.equal(check(prs, snapshot), false);
+  }
+  assert.equal(check([prs[0], prs[0]], [heads[0], heads[0]]), false);
+  assert.equal(check([], []), false);
+  assert.match(merge, /Return the complete trunk-to-tip ancestry in prs, including ancestors below from_pr/);
+  assert.match(merge, /stack_snapshot_verified\(discovery.prs, stack_heads\)/);
+  assert.match(merge, /stack_heads: stack_heads/);
+  assert.match(merge, /apply_diagnose\(diagnose2, disc\)/);
+});
+
+test('enqueue rejects a changed downstack head even when the tip is unchanged', () => {
+  const merge = read('graphite-stack-merge.rhai');
+  const enqueue = merge.split('fn enqueue_prompt(')[1].split('\nfn ')[0];
+  assert.match(enqueue, /for EVERY snapshot row, including all downstack PRs/);
+  assert.match(enqueue, /every headRefOid must still equal its saved head_sha/);
+  assert.match(enqueue, /changed head blocks the entire landing, even if the tip is unchanged/);
+  assert.match(enqueue, /Count merged vs still-open PRs across EVERY discovery.prs entry/);
+  assert.doesNotMatch(enqueue, /Count.*in the from_pr\/to_pr range/);
+  assert.match(merge, /enq.merged_count \+ enq.still_open_count != disc.prs.len\(\)/);
+  assert.match(enqueue, /Never replace saved head_sha values with current values/);
+  assert.ok(enqueue.indexOf('for EVERY snapshot row') < enqueue.indexOf('If action is merge:'));
+  // Mock the worker's explicit equality contract; no GitHub or Graphite invocation.
+  const saved = [{ pr_number: 10, head_sha: 'a'.repeat(40) }, { pr_number: 20, head_sha: 'b'.repeat(40) }];
+  const observed = new Map([[10, 'c'.repeat(40)], [20, 'b'.repeat(40)]]);
+  assert.equal(saved.every(row => observed.get(row.pr_number) === row.head_sha), false);
+  assert.equal(saved[1].head_sha, observed.get(20));
+});
+
+test('enqueue checks fresh landing membership and parent relationships even when SHAs are unchanged', () => {
+  const merge = read('graphite-stack-merge.rhai');
+  const enqueue = merge.split('fn enqueue_prompt(')[1].split('\nfn ')[0];
+  assert.match(enqueue, /re-enumerate the ACTUAL current trunk-to-tip landing chain read-only/);
+  assert.match(enqueue, /Do not substitute the saved discovery list for this fresh enumeration/);
+  assert.match(enqueue, /headRefName,baseRefName,headRefOid for EVERY snapshot row/);
+  assert.match(enqueue, /each headRefName and baseRefName must equal the saved branch and parent_branch respectively/);
+  assert.ok(enqueue.indexOf('re-enumerate the ACTUAL') < enqueue.indexOf('If action is merge:'));
+  const saved = [{ pr_number: 10, branch: 'base', parent_branch: 'main' }, { pr_number: 20, branch: 'tip', parent_branch: 'base' }];
+  const current = [{ ...saved[0] }, { ...saved[1], parent_branch: 'other' }];
+  const sameTopology = saved.length === current.length && saved.every(row => current.some(other => other.pr_number === row.pr_number && other.branch === row.branch && other.parent_branch === row.parent_branch));
+  assert.equal(sameTopology, false);
+});
