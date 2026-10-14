@@ -70,3 +70,13 @@ test('upstream and local coverage caps fail closed instead of becoming clean rev
   assert.match(graphite, /if kept_here >= MAX_FINDINGS_PER_REVIEW \|\| findings.len\(\) >= MAX_FINDINGS \{\s*coverage_complete = false;/);
   assert.match(graphite, /if !map_bool\(out, "coverage_complete", false\) \{\s*coverage_complete = false;/);
 });
+test('every triage slot requires a resolved evidence-backed verdict, including refutations', () => {
+  const ready = predicate(graphite, 'triage_is_complete');
+  for (let bits=0; bits<32; bits++) {
+    const flags=Array.from({length:5}, (_,i) => Boolean(bits & (1<<i)));
+    assert.equal(ready(...flags), bits === 31);
+  }
+  assert.match(graphite, /if !triage_is_complete\(out != \(\), map_bool\(out, "coverage_complete", false\), map_str\(out, "reason"\) != "", map_str\(out, "evidence"\) != "", valid_verdict\) \{\s*coverage_complete = false;/);
+  assert.match(graphite, /valid_verdict = type_of\(map_get\(out, "real"\)\) == "bool";/);
+  assert.match(graphite, /valid_verdict = list_has\(\["actionable_valid", "already_fixed", "duplicate", "informational", "false_positive", "human_blocker"\], map_str\(out, "class"\)\);/);
+});
