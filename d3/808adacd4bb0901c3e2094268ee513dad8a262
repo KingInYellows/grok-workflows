@@ -1,0 +1,24 @@
+README.md
+  h_6000354274ce50 47,54,65-66,79,84,88,115-133
+scripts/portability.test.mjs
+  h_6000354274ce50 67-76,81-161,168-169
+scripts/update-workflows.sh
+  h_6000354274ce50 2,12-14
+skills/workflow-live-patch/SKILL.md
+  h_6000354274ce50 1-16
+sync-workflows.ps1
+  h_6000354274ce50 1-2,7,88-203,211
+sync-workflows.sh
+  h_6000354274ce50 2-3,8,10-11,14,20-25,33,39,133-219,224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d3808adacd4bb0901c3e2094268ee513dad8a262",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
