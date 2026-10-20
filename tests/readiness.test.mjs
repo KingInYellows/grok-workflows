@@ -188,12 +188,17 @@ function loadReviewFns(names) {
 
 test('reviewed sha, whole hunks, duplicate collapse, and residuals are host-enforced', () => {
   assert.match(graphite, /Workflow version 1\.0\.6\./);
-  assert.match(graphite, /"head_sha"/);
-  assert.match(graphite, /Reviewed SHA: /);
+  assert.match(graphite, /head_sha = map_str\(collect_out, "head_sha"\);/);
+  assert.match(graphite, /report \+= "Reviewed SHA: " \+ head_sha \+ "\\n";/);
   assert.match(graphite, /if !sha_ok\(head_sha\) \{\s*coverage_complete = false;/);
   assert.match(graphite, /pack_diff_hunks\(raw_diff, MAX_DIFF_CHARS\)/);
   assert.match(graphite, /for packet in review_packets \{/);
   assert.match(graphite, /if map_bool\(collect_out, "diff_truncated", false\) \|\| raw_diff\.len\(\) > MAX_DIFF_CHARS \{\s*coverage_complete = false;/);
+  const omittedAt = graphite.indexOf('if packed.omitted > 0 {');
+  const omittedFail = graphite.indexOf('coverage_complete = false;', omittedAt);
+  const submitAt = graphite.indexOf('if do_submit && repair_ready && coverage_complete');
+  assert.ok(omittedAt > 0 && omittedFail > omittedAt && submitAt > omittedFail);
+  assert.match(graphite, /if packed\.omitted > 0 \{\s*coverage_complete = false;/);
   assert.match(graphite, /## Limits/);
   assert.match(graphite, /collapse_group\(ids, confirmed, kept_ids\)/);
   assert.match(graphite, /also /);
@@ -214,10 +219,16 @@ test('reviewed sha, whole hunks, duplicate collapse, and residuals are host-enfo
   assert.match(one.packets[0], /a\.txt/);
   assert.match(one.packets[0], /b\.txt/);
   const huge = 'x'.repeat(50);
-  const over = fns.pack_diff_hunks(`diff --git a/a.txt b/a.txt\n${huge}\ndiff --git a/b.txt b/b.txt\n${huge}\ndiff --git a/c.txt b/c.txt\n${huge}`, 80);
-  assert.equal(over.packets.length, 2);
+  const hunkA = `diff --git a/a.txt b/a.txt\n${huge}`;
+  const hunkB = `diff --git a/b.txt b/b.txt\n${huge}`;
+  const hunkC = `diff --git a/c.txt b/c.txt\n${huge}`;
+  const over = fns.pack_diff_hunks(`${hunkA}\n${hunkB}\n${hunkC}`, 80);
   assert.equal(over.omitted, 1);
-  assert.equal(fns.pack_diff_hunks(`diff --git a/big.txt b/big.txt\n${'y'.repeat(100)}`, 40).omitted, 1);
+  assert.deepEqual(over.packets, [hunkA, hunkB]);
+  assert.equal(over.packets.some(packet => packet.includes('c.txt')), false);
+  const oversized = fns.pack_diff_hunks(`diff --git a/big.txt b/big.txt\n${'y'.repeat(100)}`, 40);
+  assert.equal(oversized.omitted, 1);
+  assert.deepEqual(oversized.packets, []);
   const rows = [
     {id: 'f0', file: 'preflight-gate.rhai', line: 231, issue: 'quote split', evidence: 'a'},
     {id: 'f5', file: 'preflight-gate.rhai', line: 223, issue: 'rename split', evidence: 'b'},
