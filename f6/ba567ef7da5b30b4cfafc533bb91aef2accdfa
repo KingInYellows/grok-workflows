@@ -1,0 +1,18 @@
+README.md
+  h_6000354274ce50 123
+graphite-pr-review.rhai
+  h_6000354274ce50 4,217,288-417,480,482,484,527,627,637,697,871-872,881,1014-1031,1100-1105,1112,1184,1261-1266,1352-1357,1709-1717,1721,1742-1755
+tests/readiness.test.mjs
+  h_6000354274ce50 149-235
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f6ba567ef7da5b30b4cfafc533bb91aef2accdfa",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
