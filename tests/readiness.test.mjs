@@ -146,3 +146,155 @@ test('coverage guard runs after caps and before either repair or submit side eff
   assert.ok(fpStart > 0 && fpEnd > fpStart);
   assert.doesNotMatch(graphite.slice(fpStart,fpEnd),/kept_ids.push/);
 });
+
+function loadReviewFns(names) {
+  const parts = [];
+  for (const name of names) {
+    const start = graphite.indexOf(`fn ${name}(`);
+    assert.ok(start > 0, name);
+    let depth = 0, end = -1, quoted = false, escape = false;
+    for (let i = graphite.indexOf('{', start); i < graphite.length; i++) {
+      const c = graphite[i];
+      if (quoted) {
+        if (escape) escape = false;
+        else if (c === '\\') escape = true;
+        else if (c === '"') quoted = false;
+        continue;
+      }
+      if (c === '"') { quoted = true; continue; }
+      if (c === '{') depth++;
+      if (c === '}' && --depth === 0) { end = i + 1; break; }
+    }
+    assert.ok(end > start, name);
+    parts.push(graphite.slice(start, end));
+  }
+  const js = parts.join('\n')
+    .replace(/^fn /gm, 'function ')
+    .replace(/\.len\(\)/g, '.length')
+    .replace(/\.contains\(/g, '.includes(')
+    .replace(/(\w+)\.sub_string\(/g, 'sub_string($1, ')
+    .replace(/#\{/g, '{')
+    .replace(/for (\w+) in ([^\n{]+) \{/g, 'for (const $1 of $2) {')
+    .replace(/\bif ([^\n{]+) \{/g, 'if ($1) {')
+    .replace(/\bwhile ([^\n{]+) \{/g, 'while ($1) {');
+  const type_of = x => x == null ? '()' : Array.isArray(x) ? 'array' : typeof x === 'boolean' ? 'bool' : typeof x === 'object' ? 'map' : typeof x;
+  const trimmed = s => typeof s === 'string' ? s.trim() : '';
+  const sub_string = (s, start, len) => String(s).substring(start, start + len);
+  const list_has = (items, value) => Array.isArray(items) && items.includes(value);
+  const as_array = v => Array.isArray(v) ? v : [];
+  const map_get = (m, key) => (m && typeof m === 'object' ? m[key] : undefined);
+  return Function('type_of', 'trimmed', 'sub_string', 'list_has', 'as_array', 'map_get', `${js}\nreturn { ${names.join(', ')} };`)(type_of, trimmed, sub_string, list_has, as_array, map_get);
+}
+
+test('reviewed sha, whole hunks, duplicate collapse, and residuals are host-enforced', () => {
+  assert.match(graphite, /Workflow version 1\.0\.7\./);
+  assert.match(graphite, /head_sha = map_str\(collect_out, "head_sha"\);/);
+  assert.match(graphite, /report \+= "Reviewed SHA: " \+ head_sha \+ "\\n";/);
+  assert.match(graphite, /if !sha_ok\(head_sha\) \{\s*coverage_complete = false;/);
+  assert.match(graphite, /Set pr_head_oid to headRefOid, or empty when headRefOid is missing\./);
+  assert.match(graphite, /let pr_head = map_str\(collect_out, "pr_head_oid"\);/);
+  assert.match(graphite, /if !sha_ok\(pr_head\) \|\| pr_head != head_sha \{\s*coverage_complete = false;/);
+  assert.match(graphite, /Reviewed SHA is not verified as the pull request head commit\./);
+  assert.match(graphite, /If it is not exactly head_sha, return ok=false and committed=false without edits or commits\./);
+  assert.match(graphite, /A repair commit may make git rev-parse HEAD differ from head_sha\./);
+  assert.equal(graphite.match(/head_sha: head_sha/g).length, 2);
+  assert.match(graphite, /diff is only the packed hunks joined by newlines, never the unpacked stdout/);
+  assert.match(graphite, /pack_diff_hunks\(raw_diff, MAX_DIFF_CHARS\)/);
+  assert.match(graphite, /for packet in review_packets \{/);
+  assert.match(graphite, /if map_bool\(collect_out, "diff_truncated", false\) \|\| raw_diff\.len\(\) > MAX_DIFF_CHARS \{\s*coverage_complete = false;/);
+  const omittedAt = graphite.indexOf('if packed.omitted > 0 {');
+  const omittedFail = graphite.indexOf('coverage_complete = false;', omittedAt);
+  const submitAt = graphite.indexOf('if do_submit && repair_ready && coverage_complete');
+  assert.ok(omittedAt > 0 && omittedFail > omittedAt && submitAt > omittedFail);
+  assert.match(graphite, /if packed\.omitted > 0 \{\s*coverage_complete = false;/);
+  assert.doesNotMatch(graphite, /Coverage limitation:/);
+  const reportSha = graphite.indexOf('report += "Reviewed SHA: "');
+  const limitsAt = graphite.indexOf('## Limits');
+  const countsAt = graphite.indexOf('## Counts');
+  assert.ok(reportSha > 0 && limitsAt > reportSha && countsAt > limitsAt);
+  assert.match(graphite, /collapse_duplicate_groups\(as_array\(map_get\(group_out, "groups"\)\), confirmed, kept_ids\)/);
+  assert.match(graphite, /collapse_group\(ids, confirmed, kept_ids\)/);
+  assert.match(graphite, /findings: plan_findings/);
+  const planStart = graphite.indexOf('let plan_findings = [];');
+  const planEnd = graphite.indexOf('findings: plan_findings', planStart);
+  assert.ok(planStart > 0 && planEnd > planStart);
+  assert.doesNotMatch(graphite.slice(planStart, planEnd), /merged_ids/);
+  assert.match(graphite, /also /);
+  assert.match(graphite, /if map_bool\(out, "residual", false\) \{\s*residuals\.push\(row\);/);
+  assert.match(graphite, /## Residuals/);
+  assert.match(graphite, /Set residual=true only when the packet diff states the bound and a test in that diff asserts it\./);
+  const residualStart = graphite.indexOf('if map_bool(out, "residual", false)');
+  const residualBlock = graphite.slice(residualStart, graphite.indexOf('} else {', residualStart));
+  assert.doesNotMatch(residualBlock, /kept_ids\.push/);
+  const fns = loadReviewFns(['starts_with_text', 'sha_ok', 'diff_hunks', 'pack_diff_hunks', 'ids_all_in', 'collapse_group', 'canonical_id', 'collapse_duplicate_groups']);
+  assert.equal(fns.sha_ok('a'.repeat(40)), true);
+  assert.equal(fns.sha_ok('A'.repeat(40)), false);
+  assert.equal(fns.sha_ok('abc'), false);
+  const small = 'diff --git a/a.txt b/a.txt\n+a\ndiff --git a/b.txt b/b.txt\n+b';
+  const one = fns.pack_diff_hunks(small, 16000);
+  assert.equal(one.omitted, 0);
+  assert.equal(one.packets.length, 1);
+  assert.match(one.packets[0], /a\.txt/);
+  assert.match(one.packets[0], /b\.txt/);
+  const huge = 'x'.repeat(50);
+  const hunkA = `diff --git a/a.txt b/a.txt\n${huge}`;
+  const hunkB = `diff --git a/b.txt b/b.txt\n${huge}`;
+  const hunkC = `diff --git a/c.txt b/c.txt\n${huge}`;
+  const over = fns.pack_diff_hunks(`${hunkA}\n${hunkB}\n${hunkC}`, 80);
+  assert.equal(over.omitted, 1);
+  assert.deepEqual(over.packets, [hunkA, hunkB]);
+  assert.equal(over.packets.some(packet => packet.includes('c.txt')), false);
+  const oversized = fns.pack_diff_hunks(`diff --git a/big.txt b/big.txt\n${'y'.repeat(100)}`, 40);
+  assert.equal(oversized.omitted, 1);
+  assert.deepEqual(oversized.packets, []);
+  const rows = [
+    {id: 'f0', file: 'preflight-gate.rhai', line: 231, issue: 'quote split', evidence: 'a'},
+    {id: 'f5', file: 'preflight-gate.rhai', line: 223, issue: 'rename split', evidence: 'b'},
+  ];
+  const collapsed = fns.collapse_group(['f5', 'f0'], rows, ['f0', 'f5', 't0']);
+  assert.equal(collapsed.confirmed.length, 1);
+  assert.equal(collapsed.confirmed[0].id, 'f0');
+  assert.deepEqual(collapsed.confirmed[0].merged_ids, ['f5']);
+  assert.deepEqual(collapsed.kept, ['f0', 't0']);
+  assert.deepEqual(collapsed.reduced, ['f0']);
+  const withThread = fns.collapse_group(['f0', 't0'], rows, ['f0', 'f5', 't0']);
+  assert.equal(withThread.collapsed, false);
+  assert.deepEqual(withThread.reduced, ['f0', 't0']);
+  assert.deepEqual(withThread.kept, ['f0', 'f5', 't0']);
+  const nested = [
+    {id: 'f0', file: 'a.rhai', line: 1, issue: 'same', evidence: 'a', merged_ids: []},
+    {id: 'f1', file: 'a.rhai', line: 2, issue: 'same', evidence: 'b', merged_ids: ['f2']},
+  ];
+  const absorbed = fns.collapse_group(['f0', 'f1'], nested, ['f0', 'f1']);
+  assert.deepEqual(absorbed.confirmed[0].merged_ids, ['f1', 'f2']);
+  const chain = [
+    {id: 'f0', file: 'a.rhai', line: 1, issue: 'same', evidence: 'a'},
+    {id: 'f1', file: 'a.rhai', line: 2, issue: 'same', evidence: 'b'},
+    {id: 'f2', file: 'a.rhai', line: 3, issue: 'same', evidence: 'c'},
+  ];
+  const overlapped = fns.collapse_duplicate_groups(
+    [{ids: ['f0', 'f1']}, {ids: ['f1', 'f2']}],
+    chain,
+    ['f0', 'f1', 'f2', 't0'],
+  );
+  assert.equal(overlapped.confirmed.length, 1);
+  assert.equal(overlapped.confirmed[0].id, 'f0');
+  assert.deepEqual(overlapped.confirmed[0].merged_ids, ['f1', 'f2']);
+  assert.deepEqual(overlapped.kept, ['f0', 't0']);
+  const reversed = fns.collapse_duplicate_groups(
+    [{ids: ['f1', 'f2']}, {ids: ['f0', 'f1']}],
+    chain,
+    ['f0', 'f1', 'f2'],
+  );
+  assert.equal(reversed.confirmed.length, 1);
+  assert.equal(reversed.confirmed[0].id, 'f0');
+  assert.deepEqual(reversed.confirmed[0].merged_ids, ['f1', 'f2']);
+  const mixed = fns.collapse_duplicate_groups(
+    [{ids: ['f1', 't0']}, {ids: ['f0', 'f1']}],
+    chain,
+    ['f0', 'f1', 'f2', 't0'],
+  );
+  assert.equal(mixed.confirmed[0].id, 'f0');
+  assert.deepEqual(mixed.kept, ['f0', 'f2', 't0']);
+  assert.deepEqual(mixed.groups, [{ids: ['f0', 't0']}]);
+});
