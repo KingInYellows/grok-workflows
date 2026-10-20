@@ -146,3 +146,90 @@ test('coverage guard runs after caps and before either repair or submit side eff
   assert.ok(fpStart > 0 && fpEnd > fpStart);
   assert.doesNotMatch(graphite.slice(fpStart,fpEnd),/kept_ids.push/);
 });
+
+function loadReviewFns(names) {
+  const parts = [];
+  for (const name of names) {
+    const start = graphite.indexOf(`fn ${name}(`);
+    assert.ok(start > 0, name);
+    let depth = 0, end = -1, quoted = false, escape = false;
+    for (let i = graphite.indexOf('{', start); i < graphite.length; i++) {
+      const c = graphite[i];
+      if (quoted) {
+        if (escape) escape = false;
+        else if (c === '\\') escape = true;
+        else if (c === '"') quoted = false;
+        continue;
+      }
+      if (c === '"') { quoted = true; continue; }
+      if (c === '{') depth++;
+      if (c === '}' && --depth === 0) { end = i + 1; break; }
+    }
+    assert.ok(end > start, name);
+    parts.push(graphite.slice(start, end));
+  }
+  const js = parts.join('\n')
+    .replace(/^fn /gm, 'function ')
+    .replace(/\.len\(\)/g, '.length')
+    .replace(/\.contains\(/g, '.includes(')
+    .replace(/(\w+)\.sub_string\(/g, 'sub_string($1, ')
+    .replace(/#\{/g, '{')
+    .replace(/for (\w+) in ([^\n{]+) \{/g, 'for (const $1 of $2) {')
+    .replace(/\bif ([^\n{]+) \{/g, 'if ($1) {')
+    .replace(/\bwhile ([^\n{]+) \{/g, 'while ($1) {');
+  const type_of = x => x == null ? '()' : Array.isArray(x) ? 'array' : typeof x === 'boolean' ? 'bool' : typeof x === 'object' ? 'map' : typeof x;
+  const trimmed = s => typeof s === 'string' ? s.trim() : '';
+  const sub_string = (s, start, len) => String(s).substring(start, start + len);
+  const list_has = (items, value) => Array.isArray(items) && items.includes(value);
+  const as_array = v => Array.isArray(v) ? v : [];
+  const map_get = (m, key) => (m && typeof m === 'object' ? m[key] : undefined);
+  return Function('type_of', 'trimmed', 'sub_string', 'list_has', 'as_array', 'map_get', `${js}\nreturn { ${names.join(', ')} };`)(type_of, trimmed, sub_string, list_has, as_array, map_get);
+}
+
+test('reviewed sha, whole hunks, duplicate collapse, and residuals are host-enforced', () => {
+  assert.match(graphite, /Workflow version 1\.0\.6\./);
+  assert.match(graphite, /"head_sha"/);
+  assert.match(graphite, /Reviewed SHA: /);
+  assert.match(graphite, /if !sha_ok\(head_sha\) \{\s*coverage_complete = false;/);
+  assert.match(graphite, /pack_diff_hunks\(raw_diff, MAX_DIFF_CHARS\)/);
+  assert.match(graphite, /for packet in review_packets \{/);
+  assert.match(graphite, /if map_bool\(collect_out, "diff_truncated", false\) \|\| raw_diff\.len\(\) > MAX_DIFF_CHARS \{\s*coverage_complete = false;/);
+  assert.match(graphite, /## Limits/);
+  assert.match(graphite, /collapse_group\(ids, confirmed, kept_ids\)/);
+  assert.match(graphite, /also /);
+  assert.match(graphite, /if map_bool\(out, "residual", false\) \{\s*residuals\.push\(row\);/);
+  assert.match(graphite, /## Residuals/);
+  assert.match(graphite, /Set residual=true only when the packet diff states the bound and a test in that diff asserts it\./);
+  const residualStart = graphite.indexOf('if map_bool(out, "residual", false)');
+  const residualBlock = graphite.slice(residualStart, graphite.indexOf('} else {', residualStart));
+  assert.doesNotMatch(residualBlock, /kept_ids\.push/);
+  const fns = loadReviewFns(['starts_with_text', 'sha_ok', 'diff_hunks', 'pack_diff_hunks', 'collapse_group']);
+  assert.equal(fns.sha_ok('a'.repeat(40)), true);
+  assert.equal(fns.sha_ok('A'.repeat(40)), false);
+  assert.equal(fns.sha_ok('abc'), false);
+  const small = 'diff --git a/a.txt b/a.txt\n+a\ndiff --git a/b.txt b/b.txt\n+b';
+  const one = fns.pack_diff_hunks(small, 16000);
+  assert.equal(one.omitted, 0);
+  assert.equal(one.packets.length, 1);
+  assert.match(one.packets[0], /a\.txt/);
+  assert.match(one.packets[0], /b\.txt/);
+  const huge = 'x'.repeat(50);
+  const over = fns.pack_diff_hunks(`diff --git a/a.txt b/a.txt\n${huge}\ndiff --git a/b.txt b/b.txt\n${huge}\ndiff --git a/c.txt b/c.txt\n${huge}`, 80);
+  assert.equal(over.packets.length, 2);
+  assert.equal(over.omitted, 1);
+  assert.equal(fns.pack_diff_hunks(`diff --git a/big.txt b/big.txt\n${'y'.repeat(100)}`, 40).omitted, 1);
+  const rows = [
+    {id: 'f0', file: 'preflight-gate.rhai', line: 231, issue: 'quote split', evidence: 'a'},
+    {id: 'f5', file: 'preflight-gate.rhai', line: 223, issue: 'rename split', evidence: 'b'},
+  ];
+  const collapsed = fns.collapse_group(['f5', 'f0'], rows, ['f0', 'f5', 't0']);
+  assert.equal(collapsed.confirmed.length, 1);
+  assert.equal(collapsed.confirmed[0].id, 'f0');
+  assert.deepEqual(collapsed.confirmed[0].merged_ids, ['f5']);
+  assert.deepEqual(collapsed.kept, ['f0', 't0']);
+  assert.deepEqual(collapsed.reduced, ['f0']);
+  const withThread = fns.collapse_group(['f0', 't0'], rows, ['f0', 'f5', 't0']);
+  assert.equal(withThread.collapsed, false);
+  assert.deepEqual(withThread.reduced, ['f0', 't0']);
+  assert.deepEqual(withThread.kept, ['f0', 'f5', 't0']);
+});
