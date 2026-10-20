@@ -1,0 +1,18 @@
+README.md
+  h_6000354274ce50 126
+preflight-gate.rhai
+  h_6000354274ce50 4,118-316,654-674,790-796
+tests/review-coverage.test.cjs
+  h_6000354274ce50 34,38,40-42,129-130,313-371
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2951c6ed219e91ccbdfc76d9aa3092e47eafafa3",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
