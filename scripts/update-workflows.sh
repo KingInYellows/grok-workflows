@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pull this repo fast-forward only, then copy *.rhai into Grok config dirs.
+# Pull this repo fast-forward only, then copy workflows and skill trees into Grok config dirs.
 # Never prunes. Safe for cron / systemd timers.
 #
 # Usage: ./scripts/update-workflows.sh [--dry-run] [--no-pull]
@@ -9,8 +9,9 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/update-workflows.sh [--dry-run] [--no-pull]
 
-Fast-forward this clone from origin/main, then copy *.rhai into Grok config
-dirs via ./sync-workflows.sh. Local-only workflows are never deleted.
+Fast-forward this clone from origin/main, then copy workflows and skill trees
+into Grok config dirs via ./sync-workflows.sh. Local-only workflows and skills
+are never deleted.
 
 This script updates the source clone (~/projects/grok-workflows) and copies
 files into Grok config dirs. It does not git-pull ~/.grok/workflows.
