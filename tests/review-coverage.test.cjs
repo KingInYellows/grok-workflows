@@ -38,6 +38,7 @@ function compile(source, names) {
     assert(!/\b(try|catch)\b/.test(rhai), 'guard translator supports conditionals, while index loops, and simple array iteration only');
     let js = rhai.replace(/^fn /, 'function ').replace(/== \(\)/g, '== null').replace(/!= \(\)/g, '!= null')
       .replace(/for (\w+) in (\w+) \{/g, 'for (const $1 of $2) {').replace(/\.len\(\)/g, '.length')
+      .replace(/\.to_lower\(\)/g, '.toLowerCase()')
       .replace(/(\w+)\.sub_string\(/g, 'sub_string($1, ')
       .replace(/\bif ([^\n{]+) \{/g, 'if ($1) {').replace(/\bwhile ([^\n{]+) \{/g, 'while ($1) {').replace(/#\{/g, '{');
     vm.runInContext(js, context);
@@ -112,7 +113,9 @@ test('exact root and triple-dot scope are collected; bounded full evidence feeds
   assert.match(branch,/scope\.merge_base \+ "\.\." \+ scope\.head_commit/);
   assert.match(branch,/source_at_head: scope\.sources\[path\]/);
   assert.match(branch,/source_at_head: scope\.sources\[f.file\]/);
-  assert.match(gate,/ls-files --others --exclude-standard -z/);
+    assert.match(gate,/ls-files --others --exclude-standard -z/);
+    assert.match(gate,/status --porcelain=v1/);
+    assert.doesNotMatch(gate,/status --porcelain=v1 -z/);
 });
 
 test('git collector command contract honors nested checkout, slash ref, merge base, and non-HEAD target', () => {
@@ -312,8 +315,8 @@ test('real binary-plus-source fixture preserves full manifest without collecting
 });
 const store = compile(gate, [
   'starts_with', 'ends_with', 'contains_str', 'strip_dot_slash', 'strip_quotes', 'normalize_store_path',
-  'allowed_json_tree', 'store_suffix', 'private_store_path', 'split_lines', 'split_rename',
-  'status_line_paths', 'add_store_path', 'collect_store_paths',
+  'allowed_json_tree', 'store_suffix', 'private_store_path', 'split_lines', 'arrow_at', 'split_rename',
+  'status_char_ok', 'status_line_paths', 'add_store_path', 'collect_store_paths',
 ]);
 
 test('private_store_path matches sqlite sidecars and household exports outside source trees', () => {
@@ -322,11 +325,14 @@ test('private_store_path matches sqlite sidecars and household exports outside s
     'foo.db', 'foo.db-wal', 'foo.db-shm', 'foo.db-journal', 'Thumbs.db',
     'src/household.sqlite', 'household-export.json', 'backups/household-export.json',
     'unsaved-household-v1.json', './household-dump.json',
+    'Family.DB', 'cache.SQLite', 'data.SQLITE-WAL', 'App.DB-JOURNAL',
+    'Household-Export.JSON', 'notes/Household.JSON',
   ]) assert.equal(store.private_store_path(path), true, path);
   for (const path of [
     '', 'src/lib/household/service.test.ts', 'src/household-schema.json', 'docs/household-notes.json',
     'scripts/household-schema.json', 'tests/household-schema.json', 'test/household-schema.json',
     'fixtures/household-schema.json', 'testdata/household-schema.json', './src/household-schema.json',
+    'src/Household-Schema.JSON', 'docs/Household-Notes.JSON',
     'package.json', 'README.md', 'foo.sqlite.bak',
   ]) assert.equal(store.private_store_path(path), false, path);
   assert.equal(store.private_store_path(null), false);
@@ -354,6 +360,36 @@ test('collect_store_paths reads status and untracked without sending hits to a v
   const broken = store.collect_store_paths({status: 'M\n', untracked: []});
   assert.equal(broken.unparsed, true);
   assert.deepEqual(pathsOf(broken), []);
+  const stagedDelete = store.collect_store_paths({
+    status: 'D  foo.sqlite\nD  household-export.json\n',
+    untracked: [],
+  });
+  assert.deepEqual(pathsOf(stagedDelete), []);
+  assert.equal(stagedDelete.unparsed, false);
+  const worktreeDelete = store.collect_store_paths({
+    status: ' D foo.sqlite\nMD household-export.json\n',
+    untracked: [],
+  });
+  assert.deepEqual(pathsOf(worktreeDelete), ['foo.sqlite', 'household-export.json']);
+  assert.equal(worktreeDelete.unparsed, false);
+  const renamedAway = store.collect_store_paths({
+    status: 'R  household-export.json -> keep.csv\nR  foo.sqlite -> bar.sqlite\nC  cache.sqlite -> notes.txt\n',
+    untracked: [],
+  });
+  assert.deepEqual(pathsOf(renamedAway), ['bar.sqlite', 'cache.sqlite']);
+  assert.equal(renamedAway.unparsed, false);
+  const quotedArrow = store.collect_store_paths({
+    status: ' M "a -> household.json"\nR  "a -> household.json" -> Family.DB\n?? Data.SQLite\n',
+    untracked: ['Household-Export.JSON'],
+  });
+  assert.deepEqual(pathsOf(quotedArrow), ['a -> household.json', 'Family.DB', 'Data.SQLite', 'Household-Export.JSON']);
+  assert.equal(quotedArrow.unparsed, false);
+  const badStatus = store.collect_store_paths({
+    status: 'X  foo.sqlite\nR  foo.sqlite\nR  a -> b -> c.sqlite\n',
+    untracked: [],
+  });
+  assert.equal(badStatus.unparsed, true);
+  assert.deepEqual(pathsOf(badStatus), []);
   const many = Array.from({length: 21}, (_, i) => `?? n${i}.sqlite`).join('\n');
   const capped = store.collect_store_paths({status: many, untracked: []});
   assert.equal(capped.paths.length, 20);
