@@ -130,6 +130,29 @@ sync_support() {
   done < <(find "$REPO/workflow-support" -type f -name '*.mjs' ! -name '*.test.mjs' -print0)
 }
 
+# Refuse a symlink on the destination file or any existing ancestor through
+# dest_root. Missing components are created later as real directories.
+reject_skill_dest_symlink() {
+  local check="$1"
+  local root="$2"
+  local parent
+  while true; do
+    if [ "$check" != "$root" ] && [ "${check#"$root"/}" = "$check" ]; then
+      break
+    fi
+    if [[ -L "$check" ]]; then
+      echo "refusing symlink: $check" >&2
+      exit 1
+    fi
+    [ "$check" = "$root" ] && break
+    parent="${check%/*}"
+    if [[ -z "$parent" || "$parent" == "$check" ]]; then
+      break
+    fi
+    check="$parent"
+  done
+}
+
 sync_skills() {
   local home="$1"
   local src_root="$REPO/skills"
@@ -166,10 +189,7 @@ sync_skills() {
         */node_modules/*|*/.git/*) continue ;;
       esac
       target="$dest_root/$name/$rel"
-      if [[ -L "$target" ]]; then
-        echo "refusing symlink: $target" >&2
-        exit 1
-      fi
+      reject_skill_dest_symlink "$target" "$dest_root"
       if [[ -f "$target" ]] && cmp -s "$src" "$target"; then
         skipped=$((skipped + 1))
         continue
@@ -205,12 +225,15 @@ sync_skills() {
           exit 1
         fi
         rel_extra="${extra#"$dest_skill/"}"
+        case "/$rel_extra/" in
+          */node_modules/*|*/.git/*) continue ;;
+        esac
         if [[ ! -f "$src_root/$base/$rel_extra" ]]; then
           pruned=$((pruned + 1))
           echo "prune   $extra"
           run rm -f -- "$extra"
         fi
-      done < <(find "$dest_skill" -type f -print0)
+      done < <(find "$dest_skill" \( -type f -o -type l \) -print0)
     done < <(find "$dest_root" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0)
   fi
 

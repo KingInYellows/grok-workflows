@@ -113,6 +113,33 @@ function Get-SkillFiles {
     return $files
 }
 
+function Assert-SkillDestinationPath {
+    param([string]$Root, [string]$Path)
+    $current = $Path
+    while ($true) {
+        $item = $null
+        try {
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        } catch {
+            $missing = $_.Exception -is [System.Management.Automation.ItemNotFoundException] -or
+                $_.FullyQualifiedErrorId -like 'PathNotFound,*' -or
+                $_.FullyQualifiedErrorId -like 'ItemNotFound,*'
+            if (-not $missing) { throw }
+        }
+        if ($null -ne $item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "refusing symlink: $current"
+        }
+        if ([string]::Equals($current, $Root, [StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $parent = Split-Path -Parent $current
+        if ([string]::IsNullOrEmpty($parent) -or $parent -eq $current) {
+            break
+        }
+        $current = $parent
+    }
+}
+
 function Sync-Skills {
     param([string]$GrokHome)
     $srcRoot = Join-Path $Repo "skills"
@@ -146,6 +173,7 @@ function Sync-Skills {
             if (-not $src.FullName.StartsWith($prefix)) { throw "skill path escaped $($skill.FullName)" }
             $rel = $src.FullName.Substring($prefix.Length)
             $target = [IO.Path]::Combine((Join-Path $destRoot $skill.Name), $rel)
+            Assert-SkillDestinationPath -Root $destRoot -Path $target
             if ((Test-Path -LiteralPath $target) -and (Test-SkillReparsePoint $target)) {
                 throw "refusing symlink: $target"
             }

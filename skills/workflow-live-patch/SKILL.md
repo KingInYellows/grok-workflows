@@ -9,7 +9,7 @@ disable-model-invocation: false
 
 # Workflow live patch
 
-1. Name the workflow file and the live run. Confirm it is the file just edited, not a sibling workflow. For docs-refresh the saved file is `/home/kinginyellow/.grok/workflows/docs-refresh.rhai` unless the user names another path.
+1. Name the workflow file and the live run. Confirm it is the file just edited, not a sibling workflow. That file is the script path the run reports. For docs-refresh it is `<Grok home>/workflows/docs-refresh.rhai` unless the user names another path.
 2. Watch the run until it finishes or fails. Record the failing phase, the last log line, and the script path.
 3. Do not treat silence as done. Patch only a failure or a gap the user asked to close.
 4. Edit that script copy. Smoke-check with validate_only true. Do not invent host APIs.
