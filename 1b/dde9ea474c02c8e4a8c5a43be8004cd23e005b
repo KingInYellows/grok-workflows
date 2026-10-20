@@ -1,0 +1,14 @@
+tests/readiness.test.mjs
+  h_6000354274ce50 191-192,197-201,222-225,227-231
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1bdde9ea474c02c8e4a8c5a43be8004cd23e005b",
+  "prompts": {},
+  "humans": {
+    "h_6000354274ce50": {
+      "author": "KingInYellow18 <KingInYellow18@proton.me>"
+    }
+  }
+}
