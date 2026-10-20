@@ -1,7 +1,7 @@
 let meta = #{
     name: "graphite-pr-review",
     description: "Review one Graphite PR, refute findings, plan repairs, then optionally commit and submit",
-    when_to_use: "One open Graphite pull request. Read-only review unless args.apply is true. Submit only when args.submit is true. Never merges. Collect checks out the pull request branch, or uses the worktree that already has it. Untracked plans/, .grok/, docs/goals/, docs/brainstorms/, and docs/solutions/ do not block. A read-only review does not pause on other uncommitted files. Pass args.repo when the pull request is not in this checkout. /graphite-pr-review or /workflow graphite-pr-review. Workflow version 1.0.6.",
+    when_to_use: "One open Graphite pull request. Read-only review unless args.apply is true. Submit only when args.submit is true. Never merges. Collect checks out the pull request branch, or uses the worktree that already has it. Untracked plans/, .grok/, docs/goals/, docs/brainstorms/, and docs/solutions/ do not block. A read-only review does not pause on other uncommitted files. Pass args.repo when the pull request is not in this checkout. /graphite-pr-review or /workflow graphite-pr-review. Workflow version 1.0.7.",
     phases: [
         #{ title: "Collect", detail: "Parent diff and unanswered review threads" },
         #{ title: "Review", detail: "Four read-only reviewers on the incremental diff" },
@@ -282,7 +282,7 @@ fn ids_all_in(ids, allowed) {
         let id = trimmed(item);
         if id == "" || !list_has(allowed, id) { return false; }
     }
-    true
+    return true;
 }
 
 fn sha_ok(s) {
@@ -389,8 +389,18 @@ fn collapse_group(ids, confirmed_rows, kept) {
         if list_has(merged, row.id) { continue; }
         if row.id == survivor {
             let all_merged = [];
-            for id in as_array(map_get(row, "merged_ids")) { all_merged.push(id); }
-            for id in merged { all_merged.push(id); }
+            for id in as_array(map_get(row, "merged_ids")) {
+                if id != survivor && !list_has(all_merged, id) { all_merged.push(id); }
+            }
+            for id in merged {
+                if !list_has(all_merged, id) { all_merged.push(id); }
+            }
+            for other in confirmed_rows {
+                if !list_has(merged, other.id) { continue; }
+                for id in as_array(map_get(other, "merged_ids")) {
+                    if id != survivor && !list_has(all_merged, id) { all_merged.push(id); }
+                }
+            }
             next_confirmed.push(#{
                 id: row.id,
                 file: row.file,
@@ -413,6 +423,69 @@ fn collapse_group(ids, confirmed_rows, kept) {
         if id != survivor && !list_has(merged, id) { reduced.push(id); }
     }
     return #{ confirmed: next_confirmed, kept: next_kept, reduced: reduced, collapsed: true };
+}
+
+fn canonical_id(id, links) {
+    let current = id;
+    let guard = 0;
+    while guard < 16 {
+        let next = "";
+        for link in links {
+            if trimmed(map_get(link, "from")) == current {
+                next = trimmed(map_get(link, "to"));
+                break;
+            }
+        }
+        if next == "" || next == current { return current; }
+        current = next;
+        guard += 1;
+    }
+    return current;
+}
+
+// Overlapping groups are one duplicate component. Rewrite each id to the
+// survivor already chosen before the membership check, and carry merged ids
+// that a later collapse removes out of groups stored for the planner.
+fn collapse_duplicate_groups(raw_groups, confirmed_rows, kept) {
+    let confirmed = confirmed_rows;
+    let kept_ids = kept;
+    let links = [];
+    let stored = [];
+    for row in as_array(raw_groups) {
+        if type_of(row) != "map" { continue; }
+        let ids = [];
+        for item in as_array(map_get(row, "ids")) {
+            let id = canonical_id(trimmed(item), links);
+            if id != "" && !list_has(ids, id) { ids.push(id); }
+        }
+        if ids.len() < 2 { continue; }
+        if !ids_all_in(ids, kept_ids) { continue; }
+        let collapsed = collapse_group(ids, confirmed, kept_ids);
+        confirmed = collapsed.confirmed;
+        kept_ids = collapsed.kept;
+        if collapsed.collapsed {
+            let survivor = "";
+            if collapsed.reduced.len() > 0 { survivor = collapsed.reduced[0]; }
+            for id in ids {
+                if survivor != "" && id != survivor && !list_has(kept_ids, id) {
+                    links.push(#{ from: id, to: survivor });
+                }
+            }
+        }
+        if collapsed.reduced.len() >= 2 {
+            stored.push(#{ ids: collapsed.reduced });
+        }
+    }
+    let groups = [];
+    for row in stored {
+        let ids = [];
+        for item in as_array(map_get(row, "ids")) {
+            let id = canonical_id(trimmed(item), links);
+            if id != "" && list_has(kept_ids, id) && !list_has(ids, id) { ids.push(id); }
+        }
+        if ids.len() >= 2 { groups.push(#{ ids: ids }); }
+    }
+    return #{ confirmed: confirmed, kept: kept_ids, groups: groups };
 }
 
 // Check the final accepted/capped plan, not merely each candidate's membership.
@@ -473,7 +546,7 @@ fn collect_prompt(pr_number, repo) {
         p += "Start in " + repo + ". Run git commands after cd " + repo + ".\n";
     }
     p += "Steps:\n";
-    p += "1. Resolve the pull request with gh pr view. If the number is 0, omit the number so gh uses the current branch. Read number, headRefName, and baseRefName. Branch is headRefName. Parent is baseRefName. Do not replace parent with main unless baseRefName is main.\n";
+    p += "1. Resolve the pull request with gh pr view. If the number is 0, omit the number so gh uses the current branch. Read number, headRefName, baseRefName, and headRefOid. Branch is headRefName. Parent is baseRefName. Set pr_head_oid to headRefOid, or empty when headRefOid is missing. Do not replace parent with main unless baseRefName is main.\n";
     p += "2. Find the worktree that already has headRefName. Run git worktree list --porcelain. Each block starts with worktree <absolute path> and may contain branch refs/heads/<name>. If a block's branch is refs/heads/<headRefName>, that path is the pull request directory. cd there. Do not checkout in the directory you started from. Set repo_path to that absolute path, on_branch=true, and checkout_error to empty.\n";
     p += "3. If no worktree has the branch, try to check it out here. Run git status --porcelain first. Untracked paths under plans/, .grok/, docs/goals/, docs/brainstorms/, and docs/solutions/ do not block. If any other path is modified, deleted, or untracked, do not checkout. Set on_branch=false, repo_path to the absolute current directory, and checkout_error to those paths. Otherwise run node " + support_cli() + " checkout --branch <headRefName> --pr <number>. If that file is missing, run git fetch origin <headRefName> and then git checkout <headRefName>. If checkout lands on headRefName, set on_branch=true, repo_path to the absolute current directory, and checkout_error to empty. If the error says the branch is already used by a worktree, cd to the path in that error, set repo_path to it, on_branch=true, and checkout_error to empty. If checkout fails for another reason, set on_branch=false and checkout_error to stderr, then continue. Do not stash.\n";
     p += "4. From the chosen directory, run git status --porcelain. Do not return early. Uncommitted files are not part of the pull request. Untracked paths under plans/, .grok/, docs/goals/, docs/brainstorms/, and docs/solutions/ are local notes: leave them out of dirty_paths. Set dirty=true only when some other path is modified, deleted, or untracked. Set dirty=false when porcelain is empty or every path is one of those local notes. Set on_branch=true only when git branch --show-current in that directory equals headRefName.\n";
@@ -586,6 +659,7 @@ fn repair_prompt(packet_json, submit_follows, edit_cap, repo) {
     let p = "You apply an accepted repair list on the current Graphite branch. Capability is limited to this list.\n";
     p += guardrails_text(repo);
     p += "The pull request branch is already checked out. Do not checkout or switch branches.\n";
+    p += "The packet head_sha is the reviewed commit. Before any edit or commit, run git rev-parse HEAD. If it is not exactly head_sha, return ok=false and committed=false without edits or commits.\n";
     p += "You must not submit, reply, resolve, push, rebase, or git commit --amend.\n";
     p += "Edit only files named on the repairs. The cleanup journal is read-only. At most " + edit_cap.to_string() + " files. Use the same normalized cleanliness rule as collection: ignore ONLY untracked paths under plans/, .grok/, docs/goals/, docs/brainstorms/, and docs/solutions/. Any other modified, staged, deleted or untracked path means clean=false. Never delete, stage or stash ignored notes. If a change is already present in HEAD and the tree is clean by this rule, do not edit; set already_present=true. Set clean after verification/commit using this same rule.\n";
     p += "Run only test_command values from the repairs. Skip a command whose value is none. Do not invent a suite. If every command is none, set tests_passed=false, tests_executed=0, and test_evidence to empty; do not commit or claim verification. Submission remains blocked until a concrete planned check can run. Record tests_executed as the count of planned commands actually run and test_evidence as their commands plus exit codes. Set tests_passed=true only if at least one planned command ran and all passed. If a command fails, set tests_passed=false and do not commit.\n";
@@ -604,6 +678,7 @@ fn submit_prompt(packet_json, reply_cap, repo) {
     let p = "You submit one Graphite branch. Do not edit files or the cleanup journal. Do not stage. Do not commit. Do not checkout.\n";
     p += guardrails_text(repo);
     p += "Support CLI: node " + support_cli() + "\n";
+    p += "The packet head_sha is the commit that was reviewed. A repair commit may make git rev-parse HEAD differ from head_sha. Submit that current HEAD. Do not edit to move HEAD back.\n";
     p += "Before mutation, verify the branch is still an unfrozen leaf with no descendants. If that cannot be verified or the journal has pending entries, stop without restack, submit, replies, or resolves. Never freeze or unfreeze any branch.\n";
     p += "Steps:\n";
     p += "1. Read git rev-parse HEAD and gh pr view <n> --json headRefOid,isDraft. If HEAD equals headRefOid, skip gt submit and set skipped_submit=true.\n";
@@ -635,6 +710,7 @@ let collect_schema = #{
         "parent": #{ "type": "string" },
         "branch": #{ "type": "string" },
         "head_sha": #{ "type": "string" },
+        "pr_head_oid": #{ "type": "string" },
         "pr": #{ "type": "integer" },
         "on_branch": #{ "type": "boolean" },
         "repo_path": #{ "type": "string" },
@@ -1016,6 +1092,12 @@ if collect_ok {
         coverage_complete = false;
         coverage_notes.push("Reviewed SHA missing or not a 40-character hex commit.");
         head_sha = "";
+    } else {
+        let pr_head = map_str(collect_out, "pr_head_oid");
+        if !sha_ok(pr_head) || pr_head != head_sha {
+            coverage_complete = false;
+            coverage_notes.push("Reviewed SHA is not verified as the pull request head commit.");
+        }
     }
     let packed = pack_diff_hunks(raw_diff, MAX_DIFF_CHARS);
     review_packets = packed.packets;
@@ -1338,24 +1420,10 @@ if kept_ids.len() > 0 {
     agent_calls += 1;
     let group_out = agent_map(grouped);
     if group_out != () {
-        for row in as_array(map_get(group_out, "groups")) {
-            if type_of(row) != "map" { continue; }
-            let ids = [];
-            for item in as_array(map_get(row, "ids")) {
-                let id = trimmed(item);
-                if id != "" && !list_has(ids, id) {
-                    ids.push(id);
-                }
-            }
-            if ids.len() < 2 { continue; }
-            if !ids_all_in(ids, kept_ids) { continue; }
-            let collapsed = collapse_group(ids, confirmed, kept_ids);
-            confirmed = collapsed.confirmed;
-            kept_ids = collapsed.kept;
-            if collapsed.reduced.len() >= 2 {
-                groups.push(#{ ids: collapsed.reduced });
-            }
-        }
+        let collapsed_groups = collapse_duplicate_groups(as_array(map_get(group_out, "groups")), confirmed, kept_ids);
+        confirmed = collapsed_groups.confirmed;
+        kept_ids = collapsed_groups.kept;
+        groups = collapsed_groups.groups;
     }
 } else {
     log("synthesizer skipped; no kept ids");
@@ -1364,12 +1432,22 @@ if kept_ids.len() > 0 {
 phase("Plan");
 let pool_count = confirmed.len() + actionable.len();
 if pool_count > 0 {
+    let plan_findings = [];
+    for row in confirmed {
+        plan_findings.push(#{
+            id: row.id,
+            file: row.file,
+            line: row.line,
+            issue: row.issue,
+            evidence: row.evidence,
+        });
+    }
     let planned = agent(
         planner_prompt(json_encode(#{
             parent: parent_branch,
             branch: head_branch,
             pr: found_pr,
-            findings: confirmed,
+            findings: plan_findings,
             actionable: actionable,
             groups: groups,
         }), MAX_REPAIRS, MAX_FILES_PER_REPAIR, repo),
@@ -1551,6 +1629,7 @@ if do_apply && repairs.len() > 0 && coverage_complete {
             parent: parent_branch,
             branch: head_branch,
             pr: found_pr,
+            head_sha: head_sha,
             repairs: repairs,
             cleanup_journal: cleanup_journal,
         }), do_submit, MAX_EDIT_FILES, repo),
@@ -1636,6 +1715,7 @@ if do_submit && repair_ready && coverage_complete {
             branch: head_branch,
             parent: parent_branch,
             publish: do_publish,
+            head_sha: head_sha,
             reply_list: reply_list,
             resolve_list: resolve_list,
             sha_hint: repair_sha,
@@ -1704,17 +1784,7 @@ report += "Submit: " + bool_text(do_submit) + "\n";
 report += "Repair ran: " + bool_text(repair_ran) + "\n";
 report += "Submit ran: " + bool_text(submit_ran) + "\n";
 report += "Review coverage complete: " + bool_text(coverage_complete) + "\n";
-for note in coverage_notes { report += "Coverage limitation: " + note + "\n"; }
 if !coverage_complete { report += "This is a partial review, not a merge-readiness verdict. Submit is blocked.\n"; }
-if !coverage_complete {
-    report += "\n## Limits\n\n";
-    if coverage_notes.len() == 0 {
-        report += "- Review coverage is incomplete.\n";
-    }
-    for note in coverage_notes {
-        report += "- " + note + "\n";
-    }
-}
 report += "Frozen-child cleanup verified: " + bool_text(cleanup_ok) + "\n";
 report += "Cleanup: " + cleanup_summary + "\n";
 if cleanup_journal != "" { report += "Recovery journal: " + cleanup_journal + "\n"; }
@@ -1724,6 +1794,15 @@ if shown_sha == "" { shown_sha = repair_sha; }
 report += "SHA: " + shown_sha + "\n";
 if collect_error != "" {
     report += "Collect error: " + collect_error + "\n";
+}
+if !coverage_complete {
+    report += "\n## Limits\n\n";
+    if coverage_notes.len() == 0 {
+        report += "- Review coverage is incomplete.\n";
+    }
+    for note in coverage_notes {
+        report += "- " + note + "\n";
+    }
 }
 report += "\n## Counts\n\n";
 report += "Confirmed findings: " + confirmed.len().to_string() + "\n";

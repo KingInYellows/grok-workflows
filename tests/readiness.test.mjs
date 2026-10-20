@@ -187,10 +187,17 @@ function loadReviewFns(names) {
 }
 
 test('reviewed sha, whole hunks, duplicate collapse, and residuals are host-enforced', () => {
-  assert.match(graphite, /Workflow version 1\.0\.6\./);
+  assert.match(graphite, /Workflow version 1\.0\.7\./);
   assert.match(graphite, /head_sha = map_str\(collect_out, "head_sha"\);/);
   assert.match(graphite, /report \+= "Reviewed SHA: " \+ head_sha \+ "\\n";/);
   assert.match(graphite, /if !sha_ok\(head_sha\) \{\s*coverage_complete = false;/);
+  assert.match(graphite, /Set pr_head_oid to headRefOid, or empty when headRefOid is missing\./);
+  assert.match(graphite, /let pr_head = map_str\(collect_out, "pr_head_oid"\);/);
+  assert.match(graphite, /if !sha_ok\(pr_head\) \|\| pr_head != head_sha \{\s*coverage_complete = false;/);
+  assert.match(graphite, /Reviewed SHA is not verified as the pull request head commit\./);
+  assert.match(graphite, /If it is not exactly head_sha, return ok=false and committed=false without edits or commits\./);
+  assert.match(graphite, /A repair commit may make git rev-parse HEAD differ from head_sha\./);
+  assert.equal(graphite.match(/head_sha: head_sha/g).length, 2);
   assert.match(graphite, /pack_diff_hunks\(raw_diff, MAX_DIFF_CHARS\)/);
   assert.match(graphite, /for packet in review_packets \{/);
   assert.match(graphite, /if map_bool\(collect_out, "diff_truncated", false\) \|\| raw_diff\.len\(\) > MAX_DIFF_CHARS \{\s*coverage_complete = false;/);
@@ -199,8 +206,18 @@ test('reviewed sha, whole hunks, duplicate collapse, and residuals are host-enfo
   const submitAt = graphite.indexOf('if do_submit && repair_ready && coverage_complete');
   assert.ok(omittedAt > 0 && omittedFail > omittedAt && submitAt > omittedFail);
   assert.match(graphite, /if packed\.omitted > 0 \{\s*coverage_complete = false;/);
-  assert.match(graphite, /## Limits/);
+  assert.doesNotMatch(graphite, /Coverage limitation:/);
+  const reportSha = graphite.indexOf('report += "Reviewed SHA: "');
+  const limitsAt = graphite.indexOf('## Limits');
+  const countsAt = graphite.indexOf('## Counts');
+  assert.ok(reportSha > 0 && limitsAt > reportSha && countsAt > limitsAt);
+  assert.match(graphite, /collapse_duplicate_groups\(as_array\(map_get\(group_out, "groups"\)\), confirmed, kept_ids\)/);
   assert.match(graphite, /collapse_group\(ids, confirmed, kept_ids\)/);
+  assert.match(graphite, /findings: plan_findings/);
+  const planStart = graphite.indexOf('let plan_findings = [];');
+  const planEnd = graphite.indexOf('findings: plan_findings', planStart);
+  assert.ok(planStart > 0 && planEnd > planStart);
+  assert.doesNotMatch(graphite.slice(planStart, planEnd), /merged_ids/);
   assert.match(graphite, /also /);
   assert.match(graphite, /if map_bool\(out, "residual", false\) \{\s*residuals\.push\(row\);/);
   assert.match(graphite, /## Residuals/);
@@ -208,7 +225,7 @@ test('reviewed sha, whole hunks, duplicate collapse, and residuals are host-enfo
   const residualStart = graphite.indexOf('if map_bool(out, "residual", false)');
   const residualBlock = graphite.slice(residualStart, graphite.indexOf('} else {', residualStart));
   assert.doesNotMatch(residualBlock, /kept_ids\.push/);
-  const fns = loadReviewFns(['starts_with_text', 'sha_ok', 'diff_hunks', 'pack_diff_hunks', 'collapse_group']);
+  const fns = loadReviewFns(['starts_with_text', 'sha_ok', 'diff_hunks', 'pack_diff_hunks', 'ids_all_in', 'collapse_group', 'canonical_id', 'collapse_duplicate_groups']);
   assert.equal(fns.sha_ok('a'.repeat(40)), true);
   assert.equal(fns.sha_ok('A'.repeat(40)), false);
   assert.equal(fns.sha_ok('abc'), false);
@@ -243,4 +260,40 @@ test('reviewed sha, whole hunks, duplicate collapse, and residuals are host-enfo
   assert.equal(withThread.collapsed, false);
   assert.deepEqual(withThread.reduced, ['f0', 't0']);
   assert.deepEqual(withThread.kept, ['f0', 'f5', 't0']);
+  const nested = [
+    {id: 'f0', file: 'a.rhai', line: 1, issue: 'same', evidence: 'a', merged_ids: []},
+    {id: 'f1', file: 'a.rhai', line: 2, issue: 'same', evidence: 'b', merged_ids: ['f2']},
+  ];
+  const absorbed = fns.collapse_group(['f0', 'f1'], nested, ['f0', 'f1']);
+  assert.deepEqual(absorbed.confirmed[0].merged_ids, ['f1', 'f2']);
+  const chain = [
+    {id: 'f0', file: 'a.rhai', line: 1, issue: 'same', evidence: 'a'},
+    {id: 'f1', file: 'a.rhai', line: 2, issue: 'same', evidence: 'b'},
+    {id: 'f2', file: 'a.rhai', line: 3, issue: 'same', evidence: 'c'},
+  ];
+  const overlapped = fns.collapse_duplicate_groups(
+    [{ids: ['f0', 'f1']}, {ids: ['f1', 'f2']}],
+    chain,
+    ['f0', 'f1', 'f2', 't0'],
+  );
+  assert.equal(overlapped.confirmed.length, 1);
+  assert.equal(overlapped.confirmed[0].id, 'f0');
+  assert.deepEqual(overlapped.confirmed[0].merged_ids, ['f1', 'f2']);
+  assert.deepEqual(overlapped.kept, ['f0', 't0']);
+  const reversed = fns.collapse_duplicate_groups(
+    [{ids: ['f1', 'f2']}, {ids: ['f0', 'f1']}],
+    chain,
+    ['f0', 'f1', 'f2'],
+  );
+  assert.equal(reversed.confirmed.length, 1);
+  assert.equal(reversed.confirmed[0].id, 'f0');
+  assert.deepEqual(reversed.confirmed[0].merged_ids, ['f1', 'f2']);
+  const mixed = fns.collapse_duplicate_groups(
+    [{ids: ['f1', 't0']}, {ids: ['f0', 'f1']}],
+    chain,
+    ['f0', 'f1', 'f2', 't0'],
+  );
+  assert.equal(mixed.confirmed[0].id, 'f0');
+  assert.deepEqual(mixed.kept, ['f0', 'f2', 't0']);
+  assert.deepEqual(mixed.groups, [{ids: ['f0', 't0']}]);
 });
