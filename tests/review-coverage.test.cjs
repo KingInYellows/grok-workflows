@@ -31,12 +31,15 @@ function compile(source, names) {
     starts_with: (s,p) => s.startsWith(p),
     ends_with: (s,p) => s.endsWith(p),
     contains: (s,p) => s.includes(p),
+    sub_string: (s, start, len) => String(s).substring(start, start + len),
   });
   for (const name of names) {
     const rhai = extract(source, name);
-    assert(!/\b(while|try|catch)\b/.test(rhai), 'guard translator supports conditionals and simple array iteration only');
+    assert(!/\b(try|catch)\b/.test(rhai), 'guard translator supports conditionals, while index loops, and simple array iteration only');
     let js = rhai.replace(/^fn /, 'function ').replace(/== \(\)/g, '== null').replace(/!= \(\)/g, '!= null')
-      .replace(/for (\w+) in (\w+) \{/g, 'for (const $1 of $2) {').replace(/\.len\(\)/g, '.length').replace(/#\{/g, '{').replace(/\bif ([^\n{]+) \{/g, 'if ($1) {');
+      .replace(/for (\w+) in (\w+) \{/g, 'for (const $1 of $2) {').replace(/\.len\(\)/g, '.length')
+      .replace(/(\w+)\.sub_string\(/g, 'sub_string($1, ')
+      .replace(/\bif ([^\n{]+) \{/g, 'if ($1) {').replace(/\bwhile ([^\n{]+) \{/g, 'while ($1) {').replace(/#\{/g, '{');
     vm.runInContext(js, context);
   }
   return context;
@@ -123,7 +126,8 @@ test('git collector command contract honors nested checkout, slash ref, merge ba
   try {
     git('init','-q'); git('config','user.email','test@example.invalid'); git('config','user.name','Coverage Fixture');
     const common = commit('common.txt','shared\n');
-    git('checkout','-qb','main'); commit('main-only.txt','base advanced\n');
+    if (git('rev-parse','--abbrev-ref','HEAD') !== 'main') git('checkout','-qb','main');
+    commit('main-only.txt','base advanced\n');
     git('update-ref','refs/remotes/origin/main',git('rev-parse','HEAD'));
     git('checkout','-qb','review-target',common); const target = commit('feature.txt','requested change\n');
     commit('head-only.txt','not requested\n'); fs.writeFileSync(path.join(checkout,'dirty.txt'),'not requested\n');
@@ -306,6 +310,65 @@ test('real binary-plus-source fixture preserves full manifest without collecting
     assert.equal(selected.skipped_n,1);
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
+const store = compile(gate, [
+  'starts_with', 'ends_with', 'contains_str', 'strip_dot_slash', 'strip_quotes', 'normalize_store_path',
+  'allowed_json_tree', 'store_suffix', 'private_store_path', 'split_lines', 'split_rename',
+  'status_line_paths', 'add_store_path', 'collect_store_paths',
+]);
+
+test('private_store_path matches sqlite sidecars and household exports outside source trees', () => {
+  for (const path of [
+    'foo.sqlite', 'foo.sqlite-wal', 'foo.sqlite-shm', 'foo.sqlite-journal',
+    'foo.db', 'foo.db-wal', 'foo.db-shm', 'foo.db-journal', 'Thumbs.db',
+    'src/household.sqlite', 'household-export.json', 'backups/household-export.json',
+    'unsaved-household-v1.json', './household-dump.json',
+  ]) assert.equal(store.private_store_path(path), true, path);
+  for (const path of [
+    '', 'src/lib/household/service.test.ts', 'src/household-schema.json', 'docs/household-notes.json',
+    'scripts/household-schema.json', 'tests/household-schema.json', 'test/household-schema.json',
+    'fixtures/household-schema.json', 'testdata/household-schema.json', './src/household-schema.json',
+    'package.json', 'README.md', 'foo.sqlite.bak',
+  ]) assert.equal(store.private_store_path(path), false, path);
+  assert.equal(store.private_store_path(null), false);
+  assert.equal(store.private_store_path(1), false);
+});
+
+test('collect_store_paths reads status and untracked without sending hits to a verifier', () => {
+  const pathsOf = scan => Array.from(scan.paths);
+  const clean = store.collect_store_paths({status: '', untracked: []});
+  assert.deepEqual(pathsOf(clean), []);
+  assert.equal(clean.unparsed, false);
+  assert.equal(clean.truncated, false);
+  const listed = store.collect_store_paths({
+    status: '?? household-export.json\n M src/app.ts\nR  keep.ts -> foo.sqlite\n?? "unsaved-household-v1.json"\n',
+    untracked: ['household-export.json', 'src/household-schema.json', './household-dump.json'],
+  });
+  assert.deepEqual(pathsOf(listed), ['household-export.json', 'foo.sqlite', 'unsaved-household-v1.json', 'household-dump.json']);
+  assert.equal(listed.unparsed, false);
+  const unstaged = store.collect_store_paths({
+    status: ' M household-export.json\n M src/household-schema.json\n M worktree.sqlite\n',
+    untracked: [],
+  });
+  assert.deepEqual(pathsOf(unstaged), ['household-export.json', 'worktree.sqlite']);
+  assert.equal(unstaged.unparsed, false);
+  const broken = store.collect_store_paths({status: 'M\n', untracked: []});
+  assert.equal(broken.unparsed, true);
+  assert.deepEqual(pathsOf(broken), []);
+  const many = Array.from({length: 21}, (_, i) => `?? n${i}.sqlite`).join('\n');
+  const capped = store.collect_store_paths({status: many, untracked: []});
+  assert.equal(capped.paths.length, 20);
+  assert.equal(capped.truncated, true);
+  const decide = gate.slice(gate.indexOf('phase("Decide")'), gate.indexOf('let blocked = gate_blocked'));
+  assert.match(decide, /collect_store_paths\(scope\)/);
+  assert.match(decide, /store_scan\.unparsed \|\| store_scan\.truncated/);
+  assert.match(decide, /coverage_incomplete = true/);
+  assert.match(decide, /confirmed\.push/);
+  assert.doesNotMatch(decide, /blockers\.push/);
+  assert.match(gate, /let lane_names = \["diff", "tests", "secrets"\];/);
+  assert.doesNotMatch(gate, /scan:store/);
+  assert.doesNotMatch(gate, /nestwatch|milwaukee|hermes|NSWCH/i);
+});
+
 test('ordinary Unicode paths match verbatim manifests with core.quotePath=false', () => {
   const {execFileSync} = require('node:child_process');
   const os = require('node:os');
