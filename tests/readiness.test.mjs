@@ -198,6 +198,7 @@ test('reviewed sha, whole hunks, duplicate collapse, and residuals are host-enfo
   assert.match(graphite, /If it is not exactly head_sha, return ok=false and committed=false without edits or commits\./);
   assert.match(graphite, /A repair commit may make git rev-parse HEAD differ from head_sha\./);
   assert.equal(graphite.match(/head_sha: head_sha/g).length, 2);
+  assert.match(graphite, /diff is only the packed hunks joined by newlines, never the unpacked stdout/);
   assert.match(graphite, /pack_diff_hunks\(raw_diff, MAX_DIFF_CHARS\)/);
   assert.match(graphite, /for packet in review_packets \{/);
   assert.match(graphite, /if map_bool\(collect_out, "diff_truncated", false\) \|\| raw_diff\.len\(\) > MAX_DIFF_CHARS \{\s*coverage_complete = false;/);
