@@ -44,13 +44,14 @@ The clone can live anywhere. Both installers honor `GROK_HOME`, falling back to 
 
 ```text
 <Grok home>/workflows/*.rhai
+<Grok home>/skills/<name>/
 <Grok home>/workflow-support/graphite-stack-review/cli.mjs
 <Grok home>/workflow-support/graphite-stack-review/lib.mjs
 ```
 
 The four Graphite helper consumers use a shell-neutral Node launcher, resolving `GROK_HOME` or Node's home directory at execution time. Paths containing spaces are passed as arguments, never interpolated into a shell command. Run Grok with the same `GROK_HOME` used to install. `GRAPHITE_STACK_REVIEW_HOME` separately overrides helper checkpoint/lock storage; it does not select the installed CLI. Without that override, state also follows `GROK_HOME`.
 
-Do not symlink the user workflow directory to this clone. Project-scoped `.grok/workflows/`, explicit workflow paths, and inline scripts are other supported launch mechanisms; these scripts install user-level copies only.
+Do not symlink the user workflow directory or the user skills directory to this clone. Project-scoped `.grok/workflows/`, explicit workflow paths, and inline scripts are other supported launch mechanisms; these scripts install user-level copies only. Skill files in this repo live in `skills/<name>/`, not `.grok/skills/`. A `[skills]` table in a project `.grok/config.toml` does not load.
 
 ## Sync repo → Grok config
 
@@ -61,7 +62,8 @@ From a Bash shell in this clone:
 ./sync-workflows.sh --dry-run        # preview without writing
 GROK_HOME="/path/custom grok" ./sync-workflows.sh
 ./sync-workflows.sh --destination "/mnt/c/Users/YourName/.grok"
-./sync-workflows.sh --prune          # also remove obsolete destination .rhai files
+./sync-workflows.sh --prune          # remove obsolete destination .rhai files only
+./sync-workflows.sh --prune-skills   # remove destination skills this repo does not ship
 ./scripts/verify.sh                  # safe local fixture/static tests, no live workflows
 ```
 
@@ -74,15 +76,16 @@ $env:GROK_HOME = 'C:\path\custom grok'
 .\sync-workflows.ps1
 .\sync-workflows.ps1 -Destination '\\wsl$\YourDistro\home\yourname\.grok'
 .\sync-workflows.ps1 -Prune
+.\sync-workflows.ps1 -PruneSkills
 ```
 
 Additional homes are explicit and additive: repeat `--destination` in Bash or pass an array to `-Destination` in PowerShell. Each destination is a Grok home, not its `workflows` subdirectory. No Windows accounts or WSL distributions are discovered automatically. Run the installer appropriate to the shell; Bash destinations use mounted POSIX paths, PowerShell destinations use native/UNC paths.
 
-`--prune` / `-Prune` is opt-in so local-only workflows are preserved by default. Pruning affects only `workflows/*.rhai`; support checkpoints, locks, and other state are never pruned. Runtime `.mjs` helpers are copied together with workflows, excluding test files. Dry runs copy neither. The Bash installer and launcher are exercised in temporary directories; PowerShell behavior still needs a Windows smoke test.
+`--prune` / `-Prune` is opt-in so local-only workflows are preserved by default. Pruning affects only `workflows/*.rhai`; skill directories, support checkpoints, locks, and other state are never pruned. `--prune-skills` / `-PruneSkills` is a separate opt-in. It does nothing when this clone has no `skills/` directory. Once `skills/` exists, it deletes every `<Grok home>/skills/<name>/` directory that has no `skills/<name>/SKILL.md` in this repo, and it deletes extra files inside a skill this repo does ship. That includes personal skills that were never imported. Files under `node_modules` or `.git` stay. Bash also stops the prune when it finds a symlink under the destination skill, including inside those directories. The daily updater never passes either prune flag. Runtime `.mjs` helpers are copied together with workflows, excluding test files. Skill trees are copied as regular files. A symlink in the source skill tree, or on the destination path from `<Grok home>/skills` through the target file, stops the install before that file is written. `node_modules` and `.git` inside a skill are not copied. Dry runs copy neither. The Bash installer and launcher are exercised in temporary directories; PowerShell behavior still needs a Windows smoke test.
 
 ## Daily update
 
-Pull `origin/main` (fast-forward only) and copy workflows and bundled helpers into the selected Grok home. Never prunes, so local-only workflows stay put. Refuses to run if this clone is dirty, not on `main`, or cannot fast-forward.
+Pull `origin/main` (fast-forward only) and copy workflows, skill trees, and bundled helpers into the selected Grok home. Never prunes, so local-only workflows and skills stay put. Refuses to run if this clone is dirty, not on `main`, or cannot fast-forward.
 
 ```bash
 cd ~/projects/grok-workflows
@@ -108,6 +111,25 @@ Do not `git pull` inside `~/.grok/workflows`. Grok writes files there.
 3. Run `./sync-workflows.sh` or `.\sync-workflows.ps1` for each explicitly selected Grok home.
 
 Launch with `/workflow <name>` or `/<name>` when the name is unique.
+
+## Adding a skill
+
+Skills in this repo are user skills. They are not project skills, and they are not loaded from this clone until the installer copies them.
+
+```text
+skills/<name>/SKILL.md
+skills/<name>/scripts/        # optional
+skills/<name>/references/     # optional
+```
+
+`<name>` uses lowercase letters, digits, and hyphens. `SKILL.md` needs `name` and `description` frontmatter.
+
+1. Write the skill under `skills/<name>/` in this clone, or run `/create-skill` and copy the new directory from `~/.grok/skills/<name>/` (or a project `.grok/skills/<name>/`) into this repo. `/create-skill` does not write into this clone.
+2. Commit the skill tree.
+3. Run `./sync-workflows.sh` or `.\sync-workflows.ps1` for each explicitly selected Grok home. `./scripts/update-workflows.sh` copies skills after a fast-forward and does not prune.
+4. Run `grok inspect`. The installed skill's source is `user` and its path is `<Grok home>/skills/<name>/SKILL.md`.
+
+Edit the repo copy, then sync. The next sync overwrites a different installed file of the same path. Do not point `[skills] paths` at this clone's `skills/` directory while also installing copies. Grok reads that key only from `~/.grok/config.toml`. `[paths] extra_skill_dirs` does not inject skills. A `[skills] paths` entry is a separate single-machine option, and workflows still need this copy because Grok has no extra path for `.rhai` files.
 
 ## Notes
 

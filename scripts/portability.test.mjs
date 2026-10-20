@@ -64,8 +64,198 @@ test('default home, dry-run, repeat installation, and workflow-only prune are is
   run('bash', ['sync-workflows.sh', '--prune'], env);
   assert.ok(!fs.existsSync(stale));
   assert.equal(fs.readFileSync(checkpoint, 'utf8'), 'state');
+  const localSkill = path.join(dest, 'skills/local-only/SKILL.md');
+  fs.mkdirSync(path.dirname(localSkill), { recursive: true });
+  fs.writeFileSync(localSkill, 'keep');
+  run('bash', ['sync-workflows.sh', '--prune-skills'], env);
+  assert.ok(fs.existsSync(path.join(root, 'skills/workflow-live-patch/SKILL.md')));
+  assert.doesNotMatch(read('skills/workflow-live-patch/SKILL.md'), /\/home\/kinginyellow/);
+  assert.match(read('skills/workflow-live-patch/SKILL.md'), /script path the run reports/);
+  assert.match(read('skills/workflow-live-patch/SKILL.md'), /<Grok home>\/workflows\/docs-refresh\.rhai/);
+  assert.ok(!fs.existsSync(localSkill));
+  assert.equal(
+    fs.readFileSync(path.join(dest, 'skills/workflow-live-patch/SKILL.md'), 'utf8'),
+    fs.readFileSync(path.join(root, 'skills/workflow-live-patch/SKILL.md'), 'utf8'),
+  );
   const invalid = spawnSync('bash', ['sync-workflows.sh', '--destination'], { cwd: root, env });
   assert.equal(invalid.status, 2);
+});
+
+test('skill trees copy into every home and only --prune-skills removes local skills', t => {
+  const dir = fixture(t);
+  const repo = path.join(dir, 'repo');
+  const skill = path.join(repo, 'skills/sample-skill');
+  fs.mkdirSync(path.join(skill, 'references'), { recursive: true });
+  fs.mkdirSync(path.join(skill, 'node_modules'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'workflow-support'), { recursive: true });
+  fs.writeFileSync(path.join(skill, 'SKILL.md'), '---\nname: sample-skill\ndescription: fixture\n---\n\n# Sample\n');
+  fs.writeFileSync(path.join(skill, 'references/note.md'), 'note\n');
+  fs.writeFileSync(path.join(skill, 'node_modules/skip.txt'), 'nope\n');
+  fs.writeFileSync(path.join(repo, 'demo.rhai'), '// demo\n');
+  const script = path.join(repo, 'sync-workflows.sh');
+  fs.copyFileSync(path.join(root, 'sync-workflows.sh'), script);
+  fs.chmodSync(script, 0o755);
+  const home = path.join(dir, 'custom config');
+  const extra = path.join(dir, 'explicit Windows home');
+  const env = { ...process.env, HOME: path.join(dir, 'host home'), GROK_HOME: home };
+  run('bash', [script, '--destination', extra], env);
+  for (const dest of [home, extra]) {
+    assert.equal(fs.readFileSync(path.join(dest, 'skills/sample-skill/SKILL.md'), 'utf8').includes('name: sample-skill'), true);
+    assert.equal(fs.readFileSync(path.join(dest, 'skills/sample-skill/references/note.md'), 'utf8'), 'note\n');
+    assert.ok(!fs.existsSync(path.join(dest, 'skills/sample-skill/node_modules/skip.txt')));
+  }
+  const again = run('bash', [script, '--destination', extra], env);
+  assert.match(again, /skills {2}added=0 updated=0 unchanged=2 pruned=0/);
+  const dryHome = path.join(dir, 'dry home');
+  const dryExtra = path.join(dir, 'dry extra');
+  run('bash', [script, '--dry-run', '--destination', dryExtra], { ...env, GROK_HOME: dryHome });
+  assert.ok(!fs.existsSync(dryHome));
+  assert.ok(!fs.existsSync(dryExtra));
+  fs.writeFileSync(path.join(home, 'workflows/local-only.rhai'), 'local');
+  fs.mkdirSync(path.join(home, 'skills/local-only'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'skills/local-only/SKILL.md'), 'local');
+  fs.writeFileSync(path.join(home, 'skills/sample-skill/local-note.md'), 'extra');
+  run('bash', [script, '--prune'], env);
+  assert.ok(!fs.existsSync(path.join(home, 'workflows/local-only.rhai')));
+  assert.equal(fs.readFileSync(path.join(home, 'skills/local-only/SKILL.md'), 'utf8'), 'local');
+  assert.equal(fs.readFileSync(path.join(home, 'skills/sample-skill/local-note.md'), 'utf8'), 'extra');
+  assert.equal(fs.readFileSync(path.join(home, 'skills/sample-skill/SKILL.md'), 'utf8').includes('sample-skill'), true);
+  run('bash', [script, '--prune-skills'], env);
+  assert.ok(!fs.existsSync(path.join(home, 'skills/local-only')));
+  assert.ok(!fs.existsSync(path.join(home, 'skills/sample-skill/local-note.md')));
+  assert.equal(fs.readFileSync(path.join(home, 'skills/sample-skill/references/note.md'), 'utf8'), 'note\n');
+
+  const bare = path.join(dir, 'bare');
+  fs.mkdirSync(path.join(bare, 'workflow-support'), { recursive: true });
+  fs.writeFileSync(path.join(bare, 'demo.rhai'), '// demo\n');
+  const bareScript = path.join(bare, 'sync-workflows.sh');
+  fs.copyFileSync(script, bareScript);
+  fs.chmodSync(bareScript, 0o755);
+  const bareHome = path.join(dir, 'bare home');
+  fs.mkdirSync(path.join(bareHome, 'skills/local-only'), { recursive: true });
+  fs.writeFileSync(path.join(bareHome, 'skills/local-only/SKILL.md'), 'keep');
+  run('bash', [bareScript, '--prune-skills'], { ...process.env, HOME: dir, GROK_HOME: bareHome });
+  assert.equal(fs.readFileSync(path.join(bareHome, 'skills/local-only/SKILL.md'), 'utf8'), 'keep');
+});
+
+test('a symlink inside a skill tree refuses the install before copying that skill', t => {
+  const dir = fixture(t);
+  const repo = path.join(dir, 'repo');
+  const skill = path.join(repo, 'skills/sample-skill');
+  fs.mkdirSync(skill, { recursive: true });
+  fs.mkdirSync(path.join(repo, 'workflow-support'), { recursive: true });
+  const manifest = path.join(skill, 'SKILL.md');
+  fs.writeFileSync(manifest, '---\nname: sample-skill\ndescription: fixture\n---\n\n# Sample\n');
+  fs.symlinkSync(manifest, path.join(skill, 'linked.md'));
+  fs.writeFileSync(path.join(repo, 'demo.rhai'), '// demo\n');
+  const script = path.join(repo, 'sync-workflows.sh');
+  fs.copyFileSync(path.join(root, 'sync-workflows.sh'), script);
+  fs.chmodSync(script, 0o755);
+  const home = path.join(dir, 'home');
+  const result = spawnSync('bash', [script], {
+    cwd: root,
+    env: { ...process.env, HOME: dir, GROK_HOME: home },
+    encoding: 'utf8',
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /refusing symlink/);
+  assert.ok(!fs.existsSync(path.join(home, 'skills/sample-skill')));
+});
+
+const skillFixture = (dir) => {
+  const repo = path.join(dir, 'repo');
+  const skill = path.join(repo, 'skills/sample-skill');
+  fs.mkdirSync(path.join(skill, 'references'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'workflow-support'), { recursive: true });
+  fs.writeFileSync(path.join(skill, 'SKILL.md'), '---\nname: sample-skill\ndescription: fixture\n---\n\n# Sample\n');
+  fs.writeFileSync(path.join(skill, 'references/note.md'), 'note\n');
+  fs.writeFileSync(path.join(repo, 'demo.rhai'), '// demo\n');
+  const script = path.join(repo, 'sync-workflows.sh');
+  fs.copyFileSync(path.join(root, 'sync-workflows.sh'), script);
+  fs.chmodSync(script, 0o755);
+  return { repo, skill, script };
+};
+
+test('destination symlinks are refused before copy, including ancestors of a missing file', t => {
+  const dir = fixture(t);
+  const { script } = skillFixture(dir);
+  const outside = path.join(dir, 'outside');
+  fs.mkdirSync(outside);
+  const envFor = home => ({ ...process.env, HOME: dir, GROK_HOME: home });
+  const sync = home => spawnSync('bash', [script], { cwd: root, env: envFor(home), encoding: 'utf8' });
+
+  const skillLinkHome = path.join(dir, 'skill link');
+  fs.mkdirSync(path.join(skillLinkHome, 'skills'), { recursive: true });
+  fs.symlinkSync(outside, path.join(skillLinkHome, 'skills/sample-skill'));
+  const skillLink = sync(skillLinkHome);
+  assert.notEqual(skillLink.status, 0);
+  assert.match(skillLink.stderr, /refusing symlink: .*\/sample-skill/);
+  assert.ok(!fs.existsSync(path.join(outside, 'SKILL.md')));
+  assert.ok(!fs.existsSync(path.join(outside, 'references')));
+
+  const rootLinkHome = path.join(dir, 'root link');
+  fs.mkdirSync(rootLinkHome);
+  fs.symlinkSync(outside, path.join(rootLinkHome, 'skills'));
+  const rootLink = sync(rootLinkHome);
+  assert.notEqual(rootLink.status, 0);
+  assert.match(rootLink.stderr, /refusing symlink/);
+  assert.ok(!fs.existsSync(path.join(outside, 'sample-skill')));
+
+  const nestedHome = path.join(dir, 'nested link');
+  fs.mkdirSync(path.join(nestedHome, 'skills/sample-skill'), { recursive: true });
+  fs.symlinkSync(outside, path.join(nestedHome, 'skills/sample-skill/references'));
+  const nested = sync(nestedHome);
+  assert.notEqual(nested.status, 0);
+  assert.match(nested.stderr, /refusing symlink: .*\/references/);
+  assert.ok(!fs.existsSync(path.join(outside, 'note.md')));
+
+  const dryHome = path.join(dir, 'dry link');
+  fs.mkdirSync(path.join(dryHome, 'skills'), { recursive: true });
+  fs.symlinkSync(outside, path.join(dryHome, 'skills/sample-skill'));
+  const dry = spawnSync('bash', [script, '--dry-run'], { cwd: root, env: envFor(dryHome), encoding: 'utf8' });
+  assert.notEqual(dry.status, 0);
+  assert.match(dry.stderr, /refusing symlink/);
+  assert.ok(!fs.existsSync(path.join(outside, 'SKILL.md')));
+
+  const realHome = path.join(dir, 'real home');
+  run('bash', [script], envFor(realHome));
+  const planted = path.join(outside, 'plant.md');
+  fs.writeFileSync(planted, 'plant\n');
+  const installed = path.join(realHome, 'skills/sample-skill/SKILL.md');
+  fs.rmSync(installed);
+  fs.symlinkSync(planted, installed);
+  const replaced = sync(realHome);
+  assert.notEqual(replaced.status, 0);
+  assert.match(replaced.stderr, /refusing symlink/);
+  assert.equal(fs.readFileSync(planted, 'utf8'), 'plant\n');
+});
+
+test('prune-skills refuses destination symlinks and keeps node_modules and .git', t => {
+  const dir = fixture(t);
+  const { script } = skillFixture(dir);
+  const home = path.join(dir, 'home');
+  const env = { ...process.env, HOME: dir, GROK_HOME: home };
+  run('bash', [script], env);
+  const skillDest = path.join(home, 'skills/sample-skill');
+  fs.mkdirSync(path.join(skillDest, 'node_modules'), { recursive: true });
+  fs.mkdirSync(path.join(skillDest, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(skillDest, 'node_modules/skip.txt'), 'keep\n');
+  fs.writeFileSync(path.join(skillDest, '.git/config'), 'keep\n');
+  fs.writeFileSync(path.join(skillDest, 'local-note.md'), 'extra\n');
+  run('bash', [script, '--prune-skills'], env);
+  assert.equal(fs.readFileSync(path.join(skillDest, 'node_modules/skip.txt'), 'utf8'), 'keep\n');
+  assert.equal(fs.readFileSync(path.join(skillDest, '.git/config'), 'utf8'), 'keep\n');
+  assert.ok(!fs.existsSync(path.join(skillDest, 'local-note.md')));
+  assert.equal(fs.readFileSync(path.join(skillDest, 'references/note.md'), 'utf8'), 'note\n');
+
+  const link = path.join(skillDest, 'node_modules/linked.txt');
+  fs.symlinkSync(path.join(skillDest, 'SKILL.md'), link);
+  const pruned = spawnSync('bash', [script, '--prune-skills'], { cwd: root, env, encoding: 'utf8' });
+  assert.notEqual(pruned.status, 0);
+  assert.match(pruned.stderr, /refusing symlink/);
+  assert.ok(fs.lstatSync(link).isSymbolicLink());
+  assert.equal(fs.readFileSync(path.join(skillDest, 'node_modules/skip.txt'), 'utf8'), 'keep\n');
+  assert.equal(fs.readFileSync(path.join(skillDest, 'SKILL.md'), 'utf8').includes('sample-skill'), true);
 });
 
 test('portable helper contract is consistent; no cross-account or hardcoded WSL discovery', () => {
@@ -74,6 +264,11 @@ test('portable helper contract is consistent; no cross-account or hardcoded WSL 
   assert.doesNotMatch(read('sync-workflows.ps1'), /Ubuntu-24\.04|wsl -d/);
   assert.match(read('sync-workflows.ps1'), /\$env:GROK_HOME/);
   assert.match(read('sync-workflows.ps1'), /\[string\[\]\]\$Destination/);
+  assert.match(read('sync-workflows.ps1'), /\[switch\]\$PruneSkills/);
+  assert.match(read('sync-workflows.ps1'), /function Assert-SkillDestinationPath/);
+  assert.match(read('sync-workflows.sh'), /reject_skill_dest_symlink "\$target" "\$dest_root"/);
+  assert.match(read('sync-workflows.sh'), /find "\$dest_skill" \\\( -type f -o -type l \\\) -print0/);
+  assert.doesNotMatch(read('scripts/update-workflows.sh'), /prune-skills/);
   assert.doesNotMatch(read('graphite-stack-merge.rhai'), /cli\.py/);
   assert.match(read('graphite-stack-merge.rhai'), /Discovery is read-only/);
   assert.match(read('graphite-stack-merge.rhai'), /cfg.start_branch != "" && disc.tip_branch != cfg.start_branch/);
